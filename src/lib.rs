@@ -1,3 +1,4 @@
 pub mod parser;
 mod structs;
-mod frame;
+pub mod frame;
+mod instructions;

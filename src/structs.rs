@@ -17,8 +17,25 @@ pub struct Class {
 }
 
 impl Class {
-    fn resolve_constant(&self, index: u16) -> Option<Arc<String>> {
-        Self::resolve_utf8_constant(&self.constant_pool, index)
+    pub(crate) fn resolve_method_constant(&self, index: u16) -> Option<CpMethodrefInfo> {
+        if let ConstantPoolInfo::Methodref {
+            class_index,
+            name_and_type_index,
+        } = self.constant_pool[(index - 1) as usize]
+        {
+            if let (Some(class), Some(name_and_type)) = (
+                Self::resolve_class_constant(&self.constant_pool, class_index),
+                Self::resolve_name_and_type_constant(&self.constant_pool, name_and_type_index),
+            ) {
+                return Some(CpMethodrefInfo {
+                    class,
+                    name_and_type,
+                });
+            } else {
+                return None;
+            }
+        }
+        None
     }
 
     pub(crate) fn resolve_utf8_constant(
@@ -37,6 +54,27 @@ impl Class {
     ) -> Option<CpClassInfo> {
         if let ConstantPoolInfo::Class { name_index } = pool[(index - 1) as usize] {
             return Self::resolve_utf8_constant(pool, name_index).map(|name| CpClassInfo { name });
+        }
+        None
+    }
+
+    pub(crate) fn resolve_name_and_type_constant(
+        pool: &[ConstantPoolInfo],
+        index: u16,
+    ) -> Option<CpNameAndTypeInfo> {
+        if let ConstantPoolInfo::NameAndType {
+            name_index,
+            descriptor_index,
+        } = pool[(index - 1) as usize]
+        {
+            if let (Some(name), Some(descriptor)) = (
+                Self::resolve_utf8_constant(pool, name_index),
+                Self::resolve_utf8_constant(pool, descriptor_index),
+            ) {
+                return Some(CpNameAndTypeInfo { name, descriptor });
+            } else {
+                return None;
+            }
         }
         None
     }
@@ -171,4 +209,16 @@ pub struct MethodInfo {
 #[derive(Debug)]
 pub struct CpClassInfo {
     pub(crate) name: Arc<String>,
+}
+
+#[derive(Debug)]
+pub struct CpMethodrefInfo {
+    pub(crate) class: CpClassInfo,
+    pub(crate) name_and_type: CpNameAndTypeInfo,
+}
+
+#[derive(Debug)]
+pub struct CpNameAndTypeInfo {
+    pub(crate) name: Arc<String>,
+    pub(crate) descriptor: Arc<String>,
 }
