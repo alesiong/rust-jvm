@@ -2,6 +2,14 @@
 
 use std::sync::Arc;
 
+mod attributes;
+mod constant_pool;
+
+pub use attributes::*;
+pub use constant_pool::*;
+
+use crate::descriptor::{FieldDescriptor, MethodDescriptor};
+
 #[derive(Debug)]
 pub struct Class {
     pub(crate) minor_version: u16,
@@ -9,7 +17,7 @@ pub struct Class {
     pub(crate) constant_pool: Vec<ConstantPoolInfo>,
     pub(crate) access_flags: ClassAccessFlag,
     pub(crate) this_class: CpClassInfo,
-    pub(crate) super_class: CpClassInfo,
+    pub(crate) super_class: Option<CpClassInfo>,
     pub(crate) interfaces: Vec<u16>,
     pub(crate) fields: Vec<FieldInfo>,
     pub(crate) methods: Vec<MethodInfo>,
@@ -52,6 +60,9 @@ impl Class {
         pool: &[ConstantPoolInfo],
         index: u16,
     ) -> Option<CpClassInfo> {
+        if index == 0 {
+            return None;
+        }
         if let ConstantPoolInfo::Class { name_index } = pool[(index - 1) as usize] {
             return Self::resolve_utf8_constant(pool, name_index).map(|name| CpClassInfo { name });
         }
@@ -78,45 +89,6 @@ impl Class {
         }
         None
     }
-}
-
-#[derive(Debug)]
-pub enum ConstantPoolInfo {
-    Utf8 {
-        bytes: Arc<String>,
-    },
-    Integer,
-    Float,
-    Long,
-    Double,
-    Class {
-        name_index: u16,
-    },
-    String {
-        string_index: u16,
-    },
-    Fieldref {
-        class_index: u16,
-        name_and_type_index: u16,
-    },
-    Methodref {
-        class_index: u16,
-        name_and_type_index: u16,
-    },
-    InterfaceMethodref {
-        class_index: u16,
-        name_and_type_index: u16,
-    },
-    NameAndType {
-        name_index: u16,
-        descriptor_index: u16,
-    },
-    MethodHandle,
-    MethodType,
-    Dynamic,
-    InvokeDynamic,
-    Module,
-    Package,
 }
 
 bitflags::bitflags! {
@@ -163,62 +135,14 @@ bitflags::bitflags! {
 pub struct FieldInfo {
     pub(crate) access_flags: FieldAccessFlag,
     pub(crate) name: Arc<String>,
-    pub(crate) descriptor: Arc<String>,
+    pub(crate) descriptor: FieldDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
-}
-
-#[derive(Debug)]
-pub enum AttributeInfo {
-    Code(CodeAttribute),
-    SourceFile { sourcefile: Arc<String> },
-    LineNumberTable(Vec<LineNumberTableItem>),
-    Unknown(Arc<String>, Vec<u8>),
-}
-
-#[derive(Debug)]
-pub struct CodeAttribute {
-    pub(crate) max_stack: u16,
-    pub(crate) max_locals: u16,
-    pub(crate) code: Vec<u8>,
-    pub(crate) exception_table: Vec<ExceptionTableItem>,
-    pub(crate) attributes: Vec<AttributeInfo>,
-}
-
-#[derive(Debug)]
-pub struct LineNumberTableItem {
-    pub(crate) start_pc: u16,
-    pub(crate) line_number: u16,
-}
-
-#[derive(Debug)]
-pub struct ExceptionTableItem {
-    pub(crate) start_pc: u16,
-    pub(crate) end_pc: u16,
-    pub(crate) handler_pc: u16,
-    pub(crate) catch_type: u16,
 }
 
 #[derive(Debug)]
 pub struct MethodInfo {
     pub(crate) access_flags: MethodAccessFlag,
     pub(crate) name: Arc<String>,
-    pub(crate) descriptor: Arc<String>,
+    pub(crate) descriptor: MethodDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
-}
-
-#[derive(Debug)]
-pub struct CpClassInfo {
-    pub(crate) name: Arc<String>,
-}
-
-#[derive(Debug)]
-pub struct CpMethodrefInfo {
-    pub(crate) class: CpClassInfo,
-    pub(crate) name_and_type: CpNameAndTypeInfo,
-}
-
-#[derive(Debug)]
-pub struct CpNameAndTypeInfo {
-    pub(crate) name: Arc<String>,
-    pub(crate) descriptor: Arc<String>,
 }

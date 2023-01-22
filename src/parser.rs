@@ -4,14 +4,17 @@ use nom::{
     bytes::complete::{tag, take},
     combinator::eof,
     error_position,
-    multi::count,
-    number::complete::{be_u16, be_u32, u8},
+    multi::{count, fold_many_m_n},
+    number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u32, u8},
     IResult,
 };
 
-use crate::structs::{
-    AttributeInfo, Class, ClassAccessFlag, CodeAttribute, ConstantPoolInfo, ExceptionTableItem,
-    FieldAccessFlag, FieldInfo, LineNumberTableItem, MethodAccessFlag, MethodInfo,
+use crate::{
+    descriptor::{parse_field_descriptor, parse_method_descriptor},
+    structs::{
+        AttributeInfo, Class, ClassAccessFlag, CodeAttribute, ConstantPoolInfo, ExceptionTableItem,
+        FieldAccessFlag, FieldInfo, LineNumberTableItem, MethodAccessFlag, MethodInfo,
+    },
 };
 
 pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
@@ -37,7 +40,7 @@ pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
             access_flags: unsafe { ClassAccessFlag::from_bits_unchecked(access_flags) },
             // TODO: unwrap
             this_class: Class::resolve_class_constant(&constant_pool, this_class).unwrap(),
-            super_class: Class::resolve_class_constant(&constant_pool, super_class).unwrap(),
+            super_class: Class::resolve_class_constant(&constant_pool, super_class),
             constant_pool,
             interfaces,
             fields,
@@ -56,7 +59,23 @@ fn parse_header(input: &[u8]) -> IResult<&[u8], (u16, u16)> {
 
 fn parse_constant_pool(input: &[u8]) -> IResult<&[u8], Vec<ConstantPoolInfo>> {
     let (input, constant_pool_count) = be_u16(input)?;
-    let (input, constant_pool) = count(parse_constant, constant_pool_count as usize - 1)(input)?;
+
+    let mut constant_pool = Vec::with_capacity(constant_pool_count as usize - 1);
+
+    let mut input = input;
+
+    while constant_pool.len() < constant_pool_count as usize - 1 {
+        let constant;
+        (input, constant) = parse_constant(input)?;
+        let need_empty = matches!(
+            constant,
+            ConstantPoolInfo::Long(_) | ConstantPoolInfo::Double(_)
+        );
+        constant_pool.push(constant);
+        if need_empty {
+            constant_pool.push(ConstantPoolInfo::Empty);
+        }
+    }
 
     Ok((input, constant_pool))
 }
@@ -74,6 +93,27 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
                 // TODO: unwrap
                 bytes: Arc::new(cesu8::from_java_cesu8(bytes).unwrap().into_owned()),
             }
+        }
+        3 => {
+            let int;
+            (input, int) = be_i32(input)?;
+            ConstantPoolInfo::Integer(int)
+        }
+        4 => {
+            let float;
+            (input, float) = be_f32(input)?;
+            ConstantPoolInfo::Float(float)
+        }
+        5 => {
+            let long;
+            (input, long) = be_i64(input)?;
+            // TODO: extra cp entry
+            ConstantPoolInfo::Long(long)
+        }
+        6 => {
+            let double;
+            (input, double) = be_f64(input)?;
+            ConstantPoolInfo::Double(double)
         }
         7 => {
             let name_index;
@@ -105,6 +145,15 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
                 name_and_type_index,
             }
         }
+        11 => {
+            let (class_index, name_and_type_index);
+            (input, class_index) = be_u16(input)?;
+            (input, name_and_type_index) = be_u16(input)?;
+            ConstantPoolInfo::InterfaceMethodref {
+                class_index,
+                name_and_type_index,
+            }
+        }
         12 => {
             let (name_index, descriptor_index);
             (input, name_index) = be_u16(input)?;
@@ -115,10 +164,11 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
             }
         }
         _ => {
+            eprintln!("unkonwn constant type {}", tag);
             return Err(nom::Err::Error(error_position!(
                 input,
                 nom::error::ErrorKind::Tag
-            )))
+            )));
         }
     };
     Ok((input, cp_info))
@@ -149,6 +199,10 @@ fn parse_field(pool: &[ConstantPoolInfo]) -> impl FnMut(&[u8]) -> IResult<&[u8],
 
         let (input, attributes) = parse_attributes(input, pool)?;
 
+        // TODO: unwrap
+        let descriptor = Class::resolve_utf8_constant(pool, descriptor_index).unwrap();
+        let (_, descriptor) = parse_field_descriptor(&descriptor).unwrap();
+
         Ok((
             input,
             FieldInfo {
@@ -156,7 +210,7 @@ fn parse_field(pool: &[ConstantPoolInfo]) -> impl FnMut(&[u8]) -> IResult<&[u8],
                 access_flags: unsafe { FieldAccessFlag::from_bits_unchecked(access_flags) },
                 // TODO: unwrap
                 name: Class::resolve_utf8_constant(pool, name_index).unwrap(),
-                descriptor: Class::resolve_utf8_constant(pool, descriptor_index).unwrap(),
+                descriptor,
                 attributes,
             },
         ))
@@ -275,6 +329,10 @@ fn parse_method(pool: &[ConstantPoolInfo]) -> impl FnMut(&[u8]) -> IResult<&[u8]
         let (input, name_index) = be_u16(input)?;
         let (input, descriptor_index) = be_u16(input)?;
         let (input, attributes) = parse_attributes(input, pool)?;
+
+        // TODO: unwrap
+        let descriptor = Class::resolve_utf8_constant(pool, descriptor_index).unwrap();
+        let (_, descriptor) = parse_method_descriptor(&descriptor).unwrap();
         Ok((
             input,
             MethodInfo {
@@ -282,7 +340,7 @@ fn parse_method(pool: &[ConstantPoolInfo]) -> impl FnMut(&[u8]) -> IResult<&[u8]
                 access_flags: unsafe { MethodAccessFlag::from_bits_unchecked(access_flags) },
                 // TODO: unwrap
                 name: Class::resolve_utf8_constant(pool, name_index).unwrap(),
-                descriptor: Class::resolve_utf8_constant(pool, descriptor_index).unwrap(),
+                descriptor,
                 attributes,
             },
         ))
