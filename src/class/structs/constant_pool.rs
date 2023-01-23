@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum ConstantPoolInfo {
-    Utf8 {
-        bytes: Arc<String>,
-    },
+    Utf8(Arc<String>),
     Integer(i32),
     Float(f32),
     Long(i64),
@@ -38,21 +36,4 @@ pub enum ConstantPoolInfo {
     Module,
     Package,
     Empty
-}
-
-#[derive(Debug)]
-pub struct CpClassInfo {
-    pub(crate) name: Arc<String>,
-}
-
-#[derive(Debug)]
-pub struct CpMethodrefInfo {
-    pub(crate) class: CpClassInfo,
-    pub(crate) name_and_type: CpNameAndTypeInfo,
-}
-
-#[derive(Debug)]
-pub struct CpNameAndTypeInfo {
-    pub(crate) name: Arc<String>,
-    pub(crate) descriptor: Arc<String>,
 }

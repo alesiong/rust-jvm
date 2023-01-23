@@ -1,5 +1,6 @@
-pub mod parser;
-mod structs;
-pub mod frame;
-mod instructions;
-pub(self) mod descriptor;
+extern crate core;
+
+pub mod class;
+pub mod consts;
+pub mod descriptor;
+pub mod runtime;

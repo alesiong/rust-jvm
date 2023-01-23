@@ -144,8 +144,6 @@ iload_0	1a
 iload_1	1b
 iload_2	1c
 iload_3	1d
-impdep1	fe
-impdep2	ff
 imul	68
 ineg	74
 instanceof	c1
@@ -222,4 +220,6 @@ sipush	11
 swap	5f
 tableswitch	aa
 wide	c4
+invokenative	fe
+impdep2	ff
 }
