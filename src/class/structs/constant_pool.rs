@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum ConstantPoolInfo {
-    Utf8(Arc<String>),
+    Utf8(Arc<str>),
     Integer(i32),
     Float(f32),
     Long(i64),

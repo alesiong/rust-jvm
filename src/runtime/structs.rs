@@ -18,7 +18,7 @@ mod object;
 pub struct Class {
     pub(crate) constant_pool: Vec<ConstantPoolInfo>,
     pub(crate) access_flags: ClassAccessFlag,
-    pub(crate) class_name: Arc<String>,
+    pub(crate) class_name: Arc<str>,
     pub(crate) super_class: Option<Arc<Class>>,
     pub(crate) interfaces: Vec<Arc<Class>>,
     pub(crate) fields: Vec<FieldInfo>,
@@ -35,7 +35,7 @@ impl Class {
         param_descriptor: &[FieldType],
     ) -> Option<&MethodInfo> {
         for method_info in &self.methods {
-            if method_info.name.as_str() != name {
+            if method_info.name.as_ref() != name {
                 continue;
             }
             if method_info.descriptor.parameters != param_descriptor {
@@ -53,7 +53,7 @@ impl Class {
 #[derive(Debug)]
 pub struct FieldInfo {
     pub(crate) access_flags: FieldAccessFlag,
-    pub(crate) name: Arc<String>,
+    pub(crate) name: Arc<str>,
     pub(crate) descriptor: FieldDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
 }
@@ -61,7 +61,7 @@ pub struct FieldInfo {
 #[derive(Debug)]
 pub struct MethodInfo {
     pub(crate) access_flags: MethodAccessFlag,
-    pub(crate) name: Arc<String>,
+    pub(crate) name: Arc<str>,
     pub(crate) descriptor: MethodDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
 }

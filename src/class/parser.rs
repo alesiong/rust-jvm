@@ -87,7 +87,7 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
             (input, bytes) = take(length)(input)?;
             ConstantPoolInfo::Utf8(
                 // TODO: unwrap
-                Arc::new(cesu8::from_java_cesu8(bytes).unwrap().into_owned()),
+                Arc::from(cesu8::from_java_cesu8(bytes).unwrap()),
             )
         }
         3 => {

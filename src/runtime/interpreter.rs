@@ -549,7 +549,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
-    fn resolve_class(&self, name: &Arc<String>, class: &RwLock<Option<Arc<Class>>>) -> Arc<Class> {
+    fn resolve_class(&self, name: &Arc<str>, class: &RwLock<Option<Arc<Class>>>) -> Arc<Class> {
         let class_read = class.read().unwrap();
         let new_class;
         if name == &self.frame.class.class_name {

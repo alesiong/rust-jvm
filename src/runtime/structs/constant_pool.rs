@@ -7,13 +7,13 @@ use crate::{
 
 #[derive(Debug)]
 pub enum ConstantPoolInfo {
-    Utf8(Arc<String>),
+    Utf8(Arc<str>),
     Integer(i32),
     Float(f32),
     Long(i64),
     Double(f64),
     Class(CpClassInfo),
-    String(Arc<String>),
+    String(Arc<str>),
     Fieldref {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<FieldDescriptor>,
@@ -27,19 +27,19 @@ pub enum ConstantPoolInfo {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
-    NameAndType(CpNameAndTypeInfo<Arc<String>>),
+    NameAndType(CpNameAndTypeInfo<Arc<str>>),
     MethodHandle,
     MethodType,
     Dynamic,
     InvokeDynamic,
-    Module(Arc<String>),
-    Package(Arc<String>),
+    Module(Arc<str>),
+    Package(Arc<str>),
     Empty,
 }
 
 #[derive(Debug)]
 pub struct CpClassInfo {
-    pub(crate) name: Arc<String>,
+    pub(crate) name: Arc<str>,
     // TODO: array, oncecell
     pub(crate) class: RwLock<Option<Arc<Class>>>,
 }
@@ -55,7 +55,7 @@ impl Clone for CpClassInfo {
 
 #[derive(Debug, Clone)]
 pub struct CpNameAndTypeInfo<T> {
-    pub(crate) name: Arc<String>,
+    pub(crate) name: Arc<str>,
     pub(crate) descriptor: T,
 }
 

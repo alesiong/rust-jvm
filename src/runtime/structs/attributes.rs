@@ -6,18 +6,18 @@ use super::CpClassInfo;
 #[derive(Debug)]
 pub enum AttributeInfo {
     Code(CodeAttribute),
-    SourceFile(Arc<String>),
+    SourceFile(Arc<str>),
     LineNumberTable(Vec<LineNumberTableItem>),
     ConstantValue(Const),
     RuntimeVisibleAnnotations(Vec<Annotation>),
     LocalVariableTable(Vec<LocalVariable>),
     StackMapTable(Vec<StackMapFrame>),
     Deprecated,
-    Signature(Arc<String>),
+    Signature(Arc<str>),
     Exceptions,
     Module(Module),
-    ModulePackages(Vec<Arc<String>>),
-    Unknown(Arc<String>),
+    ModulePackages(Vec<Arc<str>>),
+    Unknown(Arc<str>),
 }
 
 #[derive(Debug)]
@@ -37,7 +37,7 @@ pub struct Annotation {
 
 #[derive(Debug)]
 pub struct ElementValuePair {
-    pub(crate) element_name: Arc<String>,
+    pub(crate) element_name: Arc<str>,
     pub(crate) value: ElementValue,
 }
 
@@ -45,8 +45,8 @@ pub struct ElementValuePair {
 pub enum ElementValue {
     Const(Const),
     Enum {
-        type_name: Arc<String>,
-        const_name: Arc<String>,
+        type_name: Arc<str>,
+        const_name: Arc<str>,
     },
     Class(ReturnType),
     Annotation(Annotation),
@@ -63,7 +63,7 @@ pub enum Const {
     Long(i64),
     Short(i32),
     Boolean(i32),
-    String(Arc<String>),
+    String(Arc<str>),
 }
 
 impl Const {
@@ -111,7 +111,7 @@ pub struct ExceptionTableItem {
 pub struct LocalVariable {
     pub(crate) start_pc: u16,
     pub(crate) length: u16,
-    pub(crate) name: Arc<String>,
+    pub(crate) name: Arc<str>,
     pub(crate) descriptor: FieldDescriptor,
     pub(crate) index: u16,
 }
@@ -128,7 +128,7 @@ pub struct Module {
 
 #[derive(Debug)]
 pub struct ModuleExport {
-    pub(crate) exports: Arc<String>,
+    pub(crate) exports: Arc<str>,
     pub(crate) exports_flags: u16,
-    pub(crate) exports_to: Vec<Arc<String>>,
+    pub(crate) exports_to: Vec<Arc<str>>,
 }

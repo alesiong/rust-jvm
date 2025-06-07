@@ -19,7 +19,7 @@ pub(in crate::runtime) struct BootstrapClassLoader {
 struct Module {
     name: String,
     module_info: runtime::Class,
-    packages: HashSet<Arc<String>>,
+    packages: HashSet<Arc<str>>,
 }
 
 impl BootstrapClassLoader {
@@ -56,8 +56,7 @@ fn load_class(rt_path: &Path, modules: &[Module], name: &str) -> runtime::Class 
         ""
     };
     for module in modules {
-        // TODO: fix Arc<str>
-        if !module.packages.contains(&package.to_string()) {
+        if !module.packages.contains(package) {
             continue;
         }
         return parse_class(&rt_path.join(&module.name).join(class_path + ".class"));

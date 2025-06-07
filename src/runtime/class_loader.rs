@@ -7,13 +7,13 @@ use nom::multi::count;
 use nom::number::complete::{be_u16, be_u32, u8};
 use nom::{error_position, IResult, Parser, Slice};
 
-use crate::runtime::{global, Module, ModuleExport};
+use crate::runtime::{Module, ModuleExport};
 use crate::{
     class,
     consts::FieldAccessFlag,
     descriptor::{
         self, parse_field_descriptor, parse_method_descriptor, parse_return_type_descriptor,
-        FieldDescriptor, FieldType, MethodDescriptor,
+        FieldDescriptor, MethodDescriptor,
     },
     runtime::{
         self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldIndex,
@@ -24,6 +24,7 @@ use crate::{
 use super::{ElementValue, LocalVariable};
 
 mod bootstrap;
+use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 pub(super) use bootstrap::BootstrapClassLoader;
 
 pub fn parse_class(class_file: &class::Class) -> runtime::Class {
@@ -73,13 +74,29 @@ fn load_super_class(
     if class_index == 0 {
         return None;
     }
-    // TODO:
-    None
+    let super_class = resolve_cp_class(cp, class_index);
+    let class = BOOTSTRAP_CLASS_LOADER
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .resolve_class(&super_class.name);
+    Some(class)
 }
 
 fn load_interfaces(cp: &[class::ConstantPoolInfo], interfaces: &[u16]) -> Vec<Arc<runtime::Class>> {
-    // TODO:
-    vec![]
+    interfaces
+        .iter()
+        .map(|index| {
+            let interface = resolve_cp_class(cp, *index);
+            BOOTSTRAP_CLASS_LOADER
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .resolve_class(&interface.name)
+        })
+        .collect()
 }
 
 fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::ConstantPoolInfo> {
@@ -211,12 +228,12 @@ fn resolve_this_class_field_ref(
                 name_and_type,
                 field_index,
             } => {
-                if class.name.as_str() != class_name {
+                if class.name.as_ref() != class_name {
                     *field_index = FieldIndex::NotThisClass;
                     continue;
                 }
 
-                *field_index = field_map[&(name_and_type.name.as_str(), &name_and_type.descriptor)];
+                *field_index = field_map[&(name_and_type.name.as_ref(), &name_and_type.descriptor)];
             }
             _ => continue,
         }
@@ -224,21 +241,21 @@ fn resolve_this_class_field_ref(
     (instance_size as usize, static_size as usize)
 }
 
-fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<String> {
+fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<str> {
     let class::ConstantPoolInfo::Utf8(string) = &constant_pool[index as usize - 1] else {
         panic!("cannot find string {}", index);
     };
     Arc::clone(string)
 }
 
-fn resolve_cp_package(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<String> {
+fn resolve_cp_package(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<str> {
     let class::ConstantPoolInfo::Package { name_index } = &constant_pool[index as usize - 1] else {
         panic!("cannot find package {}", index);
     };
     resolve_cp_utf8(constant_pool, *name_index)
 }
 
-fn resolve_cp_module(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<String> {
+fn resolve_cp_module(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<str> {
     let class::ConstantPoolInfo::Module { name_index } = &constant_pool[index as usize - 1] else {
         panic!("cannot find module {}", index);
     };
@@ -310,10 +327,10 @@ fn resolve_cp_name_and_type(
     constant_pool: &[class::ConstantPoolInfo],
     name_index: u16,
     descriptor_index: u16,
-) -> CpNameAndTypeInfo<Arc<String>> {
+) -> CpNameAndTypeInfo<Arc<str>> {
     let name = resolve_cp_utf8(constant_pool, name_index);
     let descriptor = resolve_cp_utf8(constant_pool, descriptor_index);
-    CpNameAndTypeInfo::<Arc<String>> { name, descriptor }
+    CpNameAndTypeInfo::<Arc<str>> { name, descriptor }
 }
 
 fn resolve_constant_value(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Const {
@@ -339,7 +356,7 @@ fn parse_attribute<'a>(
 ) -> IResult<&'a [u8], runtime::AttributeInfo> {
     let attribute_name = resolve_cp_utf8(constant_pool, attribute_name_index);
 
-    let attribute_info = match attribute_name.as_str() {
+    let attribute_info = match attribute_name.as_ref() {
         "Code" => {
             let attribute_info;
             (input, attribute_info) = parse_code_attribute(input, constant_pool)?;
