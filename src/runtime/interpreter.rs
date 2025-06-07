@@ -562,8 +562,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             if let Some(cls) = &*class_write {
                 new_class = Arc::clone(cls);
             } else {
-                let mut bootstrap_class_loader =
-                    BOOTSTRAP_CLASS_LOADER.get().unwrap().lock().unwrap();
+                let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
                 new_class = bootstrap_class_loader.resolve_class(name);
                 class_write.replace(Arc::clone(&new_class));
             }

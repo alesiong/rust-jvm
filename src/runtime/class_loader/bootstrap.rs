@@ -1,10 +1,9 @@
 use crate::class::parser;
 use crate::runtime;
-use crate::runtime::AttributeInfo;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use crate::runtime::{AttributeInfo, Class};
+use dashmap::{DashMap, Entry};
+use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,7 +11,7 @@ use std::sync::Arc;
 pub(in crate::runtime) struct BootstrapClassLoader {
     rt_path: PathBuf,
     modules: Vec<Module>,
-    class_registry: HashMap<String, Arc<runtime::Class>>,
+    class_registry: DashMap<String, Arc<runtime::Class>>,
 }
 
 #[derive(Debug)]
@@ -31,11 +30,14 @@ impl BootstrapClassLoader {
                 .map(|name| load_module(&path, name))
                 .collect(),
             rt_path: path,
-            class_registry: HashMap::new(),
+            class_registry: DashMap::new(),
         }
     }
 
-    pub(in crate::runtime) fn resolve_class(&mut self, class_name: &str) -> Arc<runtime::Class> {
+    pub(in crate::runtime) fn resolve_class(&self, class_name: &str) -> Arc<runtime::Class> {
+        if let Some(class) = self.class_registry.get(class_name) {
+            return Arc::clone(&class);
+        }
         match self.class_registry.entry(class_name.to_string()) {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {

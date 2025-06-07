@@ -78,8 +78,6 @@ fn load_super_class(
     let class = BOOTSTRAP_CLASS_LOADER
         .get()
         .unwrap()
-        .lock()
-        .unwrap()
         .resolve_class(&super_class.name);
     Some(class)
 }
@@ -91,8 +89,6 @@ fn load_interfaces(cp: &[class::ConstantPoolInfo], interfaces: &[u16]) -> Vec<Ar
             let interface = resolve_cp_class(cp, *index);
             BOOTSTRAP_CLASS_LOADER
                 .get()
-                .unwrap()
-                .lock()
                 .unwrap()
                 .resolve_class(&interface.name)
         })

@@ -12,6 +12,6 @@ pub(crate) use structs::*;
 
 pub fn init_bootstrap_class_loader(rt_path: impl Into<PathBuf>, modules: &[&str]) {
     BOOTSTRAP_CLASS_LOADER
-        .set(Mutex::new(BootstrapClassLoader::new(rt_path, modules)))
+        .set(BootstrapClassLoader::new(rt_path, modules))
         .unwrap()
 }

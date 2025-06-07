@@ -21,7 +21,7 @@ fn main() {
     // println!("{:#?}", cls);
 
     let class = parse_class(&cls);
-    println!("{:#?}", class);
+    // println!("{:#?}", class);
 
     let mut main_thread = runtime::Thread::new(1024);
     main_thread.new_frame(
