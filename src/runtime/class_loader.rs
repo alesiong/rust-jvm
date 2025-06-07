@@ -1,28 +1,34 @@
+use std::collections::HashMap;
 use std::convert::identity;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use nom::bytes::complete::take;
 use nom::multi::count;
 use nom::number::complete::{be_u16, be_u32, u8};
 use nom::{error_position, IResult};
 
-use crate::descriptor::{
-    parse_field_descriptor, parse_method_descriptor, parse_return_type_descriptor,
-};
+use crate::runtime::global;
 use crate::{
     class,
-    descriptor::{self, FieldDescriptor, MethodDescriptor},
-    runtime::{self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair},
+    consts::FieldAccessFlag,
+    descriptor::{
+        self, parse_field_descriptor, parse_method_descriptor, parse_return_type_descriptor,
+        FieldDescriptor, FieldType, MethodDescriptor,
+    },
+    runtime::{
+        self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldIndex,
+        FieldInfo,
+    },
 };
 
 use super::{ElementValue, LocalVariable};
 
-pub fn parse_class(class_file: &class::Class) -> runtime::Class {
-    let constant_pool = parse_constant_pool(&class_file.constant_pool);
+pub fn parse_class(class_file: &class::Class) -> Arc<runtime::Class> {
+    let mut constant_pool = parse_constant_pool(&class_file.constant_pool);
 
     let super_class = load_super_class(&class_file.constant_pool, class_file.super_class);
     let interfaces = load_interfaces(&class_file.constant_pool, &class_file.interfaces);
-    let fields = class_file
+    let fields: Vec<_> = class_file
         .fields
         .iter()
         .map(|f| parse_field(&class_file.constant_pool, f))
@@ -38,16 +44,34 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         .map(convert_attribute(&class_file.constant_pool))
         .collect();
 
-    runtime::Class {
+    let class_name = resolve_cp_class(&class_file.constant_pool, class_file.this_class).name;
+    let (field_var_size, static_field_size) =
+        resolve_this_class_field_ref(&fields, &mut constant_pool, &class_name);
+
+    let class = Arc::new(runtime::Class {
         access_flags: class_file.access_flags,
-        class_name: resolve_cp_class(&class_file.constant_pool, class_file.this_class).name,
+        class_name: Arc::clone(&class_name),
         super_class,
         interfaces,
         fields,
         methods,
         attributes,
         constant_pool,
-    }
+        field_var_size,
+        static_fields: RwLock::new(Vec::with_capacity(static_field_size)),
+    });
+    global::CLASS_REGISTRY.insert(String::clone(&class_name), Arc::clone(&class));
+    class
+}
+
+pub fn resolve_class(class_name: &str) -> Arc<runtime::Class> {
+    // TODO: load class if not exists
+    Arc::clone(
+        &global::CLASS_REGISTRY
+            .get(class_name)
+            // TODO: exception
+            .expect("ClassNotFound"),
+    )
 }
 
 fn load_super_class(
@@ -65,6 +89,63 @@ fn load_super_class(
 fn load_interfaces(cp: &[class::ConstantPoolInfo], interfaces: &[u16]) -> Vec<Arc<runtime::Class>> {
     // TODO:
     vec![]
+}
+
+fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::ConstantPoolInfo> {
+    let mut constant_pool = Vec::with_capacity(cp.len());
+    for cp_info in cp {
+        type Cpi = runtime::ConstantPoolInfo;
+        let constant_pool_info = match cp_info {
+            class::ConstantPoolInfo::Utf8(v) => Cpi::Utf8(Arc::clone(v)),
+            class::ConstantPoolInfo::Integer(v) => Cpi::Integer(*v),
+            class::ConstantPoolInfo::Float(v) => Cpi::Float(*v),
+            class::ConstantPoolInfo::Long(v) => Cpi::Long(*v),
+            class::ConstantPoolInfo::Double(v) => Cpi::Double(*v),
+            class::ConstantPoolInfo::Class { name_index } => Cpi::Class(CpClassInfo {
+                name: resolve_cp_utf8(cp, *name_index),
+                class: RwLock::new(None),
+            }),
+            class::ConstantPoolInfo::String { string_index } => {
+                Cpi::String(resolve_cp_utf8(cp, *string_index))
+            }
+            class::ConstantPoolInfo::Fieldref {
+                class_index,
+                name_and_type_index,
+            } => Cpi::Fieldref {
+                class: resolve_cp_class(cp, *class_index),
+                name_and_type: resolve_cp_name_and_type_field(cp, *name_and_type_index),
+                field_index: FieldIndex::Unresolved,
+            },
+            class::ConstantPoolInfo::Methodref {
+                class_index,
+                name_and_type_index,
+            } => Cpi::Methodref {
+                class: resolve_cp_class(cp, *class_index),
+                name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
+            },
+            class::ConstantPoolInfo::InterfaceMethodref {
+                class_index,
+                name_and_type_index,
+            } => Cpi::InterfaceMethodref {
+                class: resolve_cp_class(cp, *class_index),
+                name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
+            },
+            class::ConstantPoolInfo::NameAndType {
+                name_index,
+                descriptor_index,
+            } => Cpi::NameAndType(resolve_cp_name_and_type(cp, *name_index, *descriptor_index)),
+            class::ConstantPoolInfo::MethodHandle => Cpi::MethodHandle,
+            class::ConstantPoolInfo::MethodType => Cpi::MethodType,
+            class::ConstantPoolInfo::Dynamic => Cpi::Dynamic,
+            class::ConstantPoolInfo::InvokeDynamic => Cpi::InvokeDynamic,
+            class::ConstantPoolInfo::Module => Cpi::Module,
+            class::ConstantPoolInfo::Package => Cpi::Package,
+            class::ConstantPoolInfo::Empty => Cpi::Empty,
+        };
+        constant_pool.push(constant_pool_info);
+    }
+
+    constant_pool
 }
 
 fn parse_field(cp: &[class::ConstantPoolInfo], field: &class::FieldInfo) -> runtime::FieldInfo {
@@ -104,60 +185,48 @@ fn convert_attribute(
     }
 }
 
-fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::ConstantPoolInfo> {
-    let mut constant_pool = Vec::with_capacity(cp.len());
-    for cp_info in cp {
-        type Cpi = runtime::ConstantPoolInfo;
-        let constant_pool_info = match cp_info {
-            class::ConstantPoolInfo::Utf8(v) => Cpi::Utf8(Arc::clone(v)),
-            class::ConstantPoolInfo::Integer(v) => Cpi::Integer(*v),
-            class::ConstantPoolInfo::Float(v) => Cpi::Float(*v),
-            class::ConstantPoolInfo::Long(v) => Cpi::Long(*v),
-            class::ConstantPoolInfo::Double(v) => Cpi::Double(*v),
-            class::ConstantPoolInfo::Class { name_index } => Cpi::Class(CpClassInfo {
-                name: resolve_cp_utf8(cp, *name_index),
-                class: None,
-            }),
-            class::ConstantPoolInfo::String { string_index } => {
-                Cpi::String(resolve_cp_utf8(cp, *string_index))
-            }
-            class::ConstantPoolInfo::Fieldref {
-                class_index,
-                name_and_type_index,
-            } => Cpi::Fieldref {
-                class: resolve_cp_class(cp, *class_index),
-                name_and_type: resolve_cp_name_and_type_field(cp, *name_and_type_index),
-            },
-            class::ConstantPoolInfo::Methodref {
-                class_index,
-                name_and_type_index,
-            } => Cpi::Methodref {
-                class: resolve_cp_class(cp, *class_index),
-                name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
-            },
-            class::ConstantPoolInfo::InterfaceMethodref {
-                class_index,
-                name_and_type_index,
-            } => Cpi::InterfaceMethodref {
-                class: resolve_cp_class(cp, *class_index),
-                name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
-            },
-            class::ConstantPoolInfo::NameAndType {
-                name_index,
-                descriptor_index,
-            } => Cpi::NameAndType(resolve_cp_name_and_type(cp, *name_index, *descriptor_index)),
-            class::ConstantPoolInfo::MethodHandle => Cpi::MethodHandle,
-            class::ConstantPoolInfo::MethodType => Cpi::MethodType,
-            class::ConstantPoolInfo::Dynamic => Cpi::Dynamic,
-            class::ConstantPoolInfo::InvokeDynamic => Cpi::InvokeDynamic,
-            class::ConstantPoolInfo::Module => Cpi::Module,
-            class::ConstantPoolInfo::Package => Cpi::Package,
-            class::ConstantPoolInfo::Empty => Cpi::Empty,
-        };
-        constant_pool.push(constant_pool_info);
+fn resolve_this_class_field_ref(
+    fields: &[FieldInfo],
+    cp: &mut [runtime::ConstantPoolInfo],
+    class_name: &str,
+) -> (usize, usize) {
+    let mut field_map: HashMap<(&str, &FieldDescriptor), FieldIndex> = HashMap::new();
+    let mut static_size = 0;
+    let mut instance_size = 0;
+    for field in fields {
+        let size = if field.descriptor.0.is_long() { 2 } else { 1 };
+        if field.access_flags.contains(FieldAccessFlag::STATIC) {
+            field_map.insert(
+                (&field.name, &field.descriptor),
+                FieldIndex::Static(static_size),
+            );
+            static_size += size;
+        } else {
+            field_map.insert(
+                (&field.name, &field.descriptor),
+                FieldIndex::Instance(instance_size),
+            );
+            instance_size += size;
+        }
     }
+    for cp_in_file in cp.iter_mut() {
+        match cp_in_file {
+            runtime::ConstantPoolInfo::Fieldref {
+                class,
+                name_and_type,
+                field_index,
+            } => {
+                if class.name.as_str() != class_name {
+                    *field_index = FieldIndex::NotThisClass;
+                    continue;
+                }
 
-    constant_pool
+                *field_index = field_map[&(name_and_type.name.as_str(), &name_and_type.descriptor)];
+            }
+            _ => continue,
+        }
+    }
+    (instance_size as usize, static_size as usize)
 }
 
 fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<String> {
@@ -168,12 +237,13 @@ fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc
 }
 
 fn resolve_cp_class(constant_pool: &[class::ConstantPoolInfo], class_index: u16) -> CpClassInfo {
-    let class::ConstantPoolInfo::Class { name_index }= &constant_pool[class_index as usize - 1] else {
+    let class::ConstantPoolInfo::Class { name_index } = &constant_pool[class_index as usize - 1]
+    else {
         panic!("cannot find class {}", class_index);
     };
     CpClassInfo {
         name: resolve_cp_utf8(constant_pool, *name_index),
-        class: None,
+        class: RwLock::new(None),
     }
 }
 
@@ -181,7 +251,11 @@ fn resolve_cp_name_and_type_field(
     constant_pool: &[class::ConstantPoolInfo],
     index: u16,
 ) -> CpNameAndTypeInfo<FieldDescriptor> {
-    let class::ConstantPoolInfo::NameAndType{ name_index, descriptor_index } = &constant_pool[index as usize - 1] else {
+    let class::ConstantPoolInfo::NameAndType {
+        name_index,
+        descriptor_index,
+    } = &constant_pool[index as usize - 1]
+    else {
         panic!("cannot find name_and_type {}", index);
     };
 
@@ -202,7 +276,11 @@ fn resolve_cp_name_and_type_method(
     constant_pool: &[class::ConstantPoolInfo],
     index: u16,
 ) -> CpNameAndTypeInfo<MethodDescriptor> {
-    let class::ConstantPoolInfo::NameAndType{ name_index, descriptor_index } = &constant_pool[index as usize - 1] else {
+    let class::ConstantPoolInfo::NameAndType {
+        name_index,
+        descriptor_index,
+    } = &constant_pool[index as usize - 1]
+    else {
         panic!("cannot find name_and_type {}", index);
     };
 

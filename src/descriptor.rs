@@ -8,10 +8,10 @@ use nom::{
     IResult,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldDescriptor(pub(crate) FieldType);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MethodDescriptor {
     pub(crate) parameters: Vec<FieldType>,
     pub(crate) return_type: ReturnType,
@@ -19,7 +19,7 @@ pub struct MethodDescriptor {
 
 pub type ReturnType = Option<FieldType>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum FieldType {
     Byte,
     Char,
@@ -31,6 +31,15 @@ pub enum FieldType {
     Short,
     Boolean,
     Array(Box<FieldType>),
+}
+
+impl FieldType {
+    pub fn is_long(&self) -> bool {
+        match self {
+            FieldType::Long | FieldType::Double => true,
+            _ => false,
+        }
+    }
 }
 
 pub fn parse_field_descriptor(input: &str) -> IResult<&str, FieldDescriptor> {

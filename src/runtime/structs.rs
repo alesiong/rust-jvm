@@ -1,15 +1,18 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub use attributes::*;
 pub use constant_pool::*;
+pub use object::*;
 
 use crate::{
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
     descriptor::{FieldDescriptor, FieldType, MethodDescriptor},
 };
+use crate::runtime::Variable;
 
 mod attributes;
 mod constant_pool;
+mod object;
 
 #[derive(Debug)]
 pub struct Class {
@@ -21,10 +24,16 @@ pub struct Class {
     pub(crate) fields: Vec<FieldInfo>,
     pub(crate) methods: Vec<MethodInfo>,
     pub(crate) attributes: Vec<AttributeInfo>,
+    pub(crate) field_var_size: usize,
+    pub(crate) static_fields: RwLock<Vec<Variable>>,
 }
 
 impl Class {
-    pub(super) fn resolve_method(&self, name: &str, param_descriptor: &[FieldType]) -> Option<&MethodInfo> {
+    pub(super) fn resolve_method(
+        &self,
+        name: &str,
+        param_descriptor: &[FieldType],
+    ) -> Option<&MethodInfo> {
         for method_info in &self.methods {
             if method_info.name.as_str() != name {
                 continue;
@@ -35,6 +44,9 @@ impl Class {
             return Some(method_info);
         }
         None
+    }
+    pub(super) fn get_constant(&self, index: u16) -> &ConstantPoolInfo {
+        &self.constant_pool[index as usize - 1]
     }
 }
 

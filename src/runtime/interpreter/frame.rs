@@ -1,8 +1,12 @@
-use std::sync::{Arc, Weak};
+use std::fmt::{Debug, Formatter};
+use std::sync::{Arc, RwLock};
 
+use crate::descriptor::ReturnType;
+use crate::runtime::interpreter::{global, InterpreterEnv};
+use crate::runtime::Heap;
 use crate::{descriptor::FieldType, runtime};
 
-use super::instructions;
+use super::Next;
 
 pub struct Thread {
     top_frame: Option<Box<Frame>>,
@@ -11,11 +15,12 @@ pub struct Thread {
 }
 
 pub struct Frame {
-    class: Arc<runtime::Class>,
-    code: Arc<[u8]>,
-    locals: Vec<Variable>,
-    stack: Vec<Variable>,
-    previous_frame: Option<Box<Frame>>,
+    pub(super) class: Arc<runtime::Class>,
+    pub(super) code: Arc<[u8]>,
+    pub(super) return_type: ReturnType,
+    pub(super) locals: Vec<Variable>,
+    pub(super) stack: Vec<Variable>,
+    pub(super) previous_frame: Option<Box<Frame>>,
 }
 
 #[derive(Copy, Clone)]
@@ -24,11 +29,26 @@ pub union Variable {
     // byte: i8,
     // char: u16,
     // short: i16,
-    pub int: i32,
-    float: f32,
-    reference: u32,
-    return_address: u32,
-    void: (),
+    pub(super) int: i32,
+    pub(super) float: f32,
+    pub(super) reference: u32,
+    pub(super) return_address: u32,
+    pub(super) void: (),
+}
+
+impl Debug for Variable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Variable")
+    }
+}
+
+impl Variable {
+    /// # Safety
+    ///
+    /// should ensure the underlying type is int
+    pub unsafe fn get_int(self) -> i32 {
+        self.int
+    }
 }
 
 impl Thread {
@@ -44,6 +64,25 @@ impl Thread {
         class: Arc<runtime::Class>,
         method_name: &str,
         param_descriptor: &[FieldType],
+        return_address: usize,
+    ) {
+        Self::new_frame_inner(
+            &mut self.top_frame,
+            class,
+            method_name,
+            param_descriptor,
+            return_address,
+            false,
+        )
+    }
+
+    fn new_frame_inner(
+        top_frame: &mut Option<Box<Frame>>,
+        class: Arc<runtime::Class>,
+        method_name: &str,
+        param_descriptor: &[FieldType],
+        return_address: usize,
+        need_this: bool,
     ) {
         let Some(method_info) = class.resolve_method(method_name, param_descriptor) else {
             panic!("method not found: {}", method_name);
@@ -51,15 +90,51 @@ impl Thread {
         for attr in &method_info.attributes {
             match attr {
                 runtime::AttributeInfo::Code(code) => {
-                    let previous_frame = self.top_frame.take();
+                    let mut previous_frame = top_frame.take();
+                    let mut locals = Vec::with_capacity(code.max_locals as _);
+                    if let Some(previous_frame) = previous_frame.as_mut() {
+                        let mut param_size = 0;
+                        for param in &method_info.descriptor.parameters {
+                            match param {
+                                FieldType::Long | FieldType::Double => {
+                                    param_size += 2;
+                                }
+                                _ => {
+                                    param_size += 1;
+                                }
+                            }
+                        }
+                        if need_this {
+                            param_size += 1;
+                        }
+                        for v in previous_frame
+                            .stack
+                            .drain((previous_frame.stack.len() - param_size)..)
+                        {
+                            locals.push(v);
+                        }
+                    }
 
-                    self.top_frame = Some(Box::new(Frame {
+                    let mut frame = Frame {
                         code: Arc::clone(&code.code),
-                        locals: Vec::with_capacity(code.max_locals as _),
-                        stack: Vec::with_capacity(code.max_stack as _),
+                        locals,
+                        stack: Vec::with_capacity(code.max_stack as usize + 2),
+                        return_type: method_info.descriptor.return_type.clone(),
                         class,
                         previous_frame,
-                    }));
+                    };
+
+                    // return address
+                    let lower = return_address as u32;
+                    let upper = (return_address >> 32) as u32;
+                    frame.stack.push(Variable {
+                        return_address: upper,
+                    });
+                    frame.stack.push(Variable {
+                        return_address: lower,
+                    });
+
+                    *top_frame = Some(Box::new(frame));
                     return;
                 }
                 _ => continue,
@@ -72,47 +147,67 @@ impl Thread {
         self.top_frame.as_deref_mut()
     }
 
-    pub fn execute(&mut self) -> Variable {
-        let frame = &mut self.top_frame.as_mut().unwrap();
-        loop {
-            let op = frame.code[self.pc];
-            match op {
-                instructions::ALOAD_0 | instructions::ILOAD_0 => {
-                    frame.stack.push(frame.locals[0]);
-                }
-                instructions::ILOAD_1 => {
-                    frame.stack.push(frame.locals[1]);
-                }
-                instructions::IADD => {
-                    // SAFETY: rely on class file checking to ensure correct type
-                    let a = unsafe { frame.stack.pop().unwrap().int };
-                    let b = unsafe { frame.stack.pop().unwrap().int };
-                    frame.stack.push(Variable { int: a + b });
-                }
-                instructions::INVOKESPECIAL => {
-                    let indexbyte1 = frame.code[self.pc + 1] as u16;
-                    let indexbyte2 = frame.code[self.pc + 2] as u16;
-                    self.pc += 2;
-                    let index = (indexbyte1 << 8) | indexbyte2;
+    pub fn execute(&mut self) {
+        let mut_pc = &mut self.pc;
+        while let Some(mut frame) = self.top_frame.take() {
+            let mut env = InterpreterEnv::new(mut_pc, &mut frame, &global::HEAP);
+            let next = env.execute();
 
-                    // let method = self.class.resolve_method_constant(index).unwrap();
-                    // println!("call method: {:?}", method);
-                    // TODO:
+            match next {
+                Next::Return { return_pc, v1, v2 } => {
+                    let (is_void, is_long) = match frame.return_type {
+                        Some(FieldType::Long | FieldType::Double) => (false, true),
+                        Some(_) => (false, false),
+                        None => (true, false),
+                    };
+                    self.top_frame = frame.previous_frame;
+                    *mut_pc = return_pc;
+                    if let Some(ref mut frame) = self.top_frame {
+                        if !is_void {
+                            frame.stack.push(v1);
+                            if is_long {
+                                frame.stack.push(v2);
+                            }
+                        }
+                    }
                 }
-                instructions::RETURN => {
-                    return Variable { void: () };
+                Next::InvokeSpecial {
+                    class,
+                    name_and_type,
+                } => {
+                    // TODO: resolve method
+                    let class = Arc::clone(&frame.class);
+                    self.top_frame = Some(frame);
+                    Self::new_frame_inner(
+                        &mut self.top_frame,
+                        // TODO: only current class
+                        class,
+                        &name_and_type.name,
+                        &name_and_type.descriptor.parameters,
+                        *mut_pc + 1,
+                        true,
+                    );
+                    *mut_pc = 0;
                 }
-                instructions::IRETURN => {
-                    return frame.stack.pop().unwrap();
-                }
-                instructions::NOP => {}
-                _ => {
-                    // skip unknown instructions
-                    eprintln!("unknown instruction: {}", op);
+                Next::InvokeStatic {
+                    class,
+                    name_and_type,
+                } => {
+                    // TODO: resolve method
+                    let class = Arc::clone(&frame.class);
+                    self.top_frame = Some(frame);
+                    Self::new_frame_inner(
+                        &mut self.top_frame,
+                        // TODO: only current class
+                        class,
+                        &name_and_type.name,
+                        &name_and_type.descriptor.parameters,
+                        *mut_pc + 1,
+                        false,
+                    );
+                    *mut_pc = 0;
                 }
             }
-
-            self.pc += 1;
         }
     }
 }
@@ -129,5 +224,9 @@ impl Frame {
         self.locals.reserve(2);
         self.locals.push(Variable { int: upper });
         self.locals.push(Variable { int: lower });
+    }
+
+    pub fn add_local_reference(&mut self, reference: u32) {
+        self.locals.push(Variable { reference });
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::{
     descriptor::{FieldDescriptor, MethodDescriptor},
@@ -17,6 +17,7 @@ pub enum ConstantPoolInfo {
     Fieldref {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<FieldDescriptor>,
+        field_index: FieldIndex,
     },
     Methodref {
         class: CpClassInfo,
@@ -39,12 +40,29 @@ pub enum ConstantPoolInfo {
 #[derive(Debug)]
 pub struct CpClassInfo {
     pub(crate) name: Arc<String>,
-    // TODO: array
-    pub(crate) class: Option<Arc<Class>>,
+    // TODO: array, oncecell
+    pub(crate) class: RwLock<Option<Arc<Class>>>,
 }
 
-#[derive(Debug)]
+impl Clone for CpClassInfo {
+    fn clone(&self) -> Self {
+        CpClassInfo{
+            name: Arc::clone(&self.name),
+            class: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CpNameAndTypeInfo<T> {
     pub(crate) name: Arc<String>,
     pub(crate) descriptor: T,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum FieldIndex {
+    Unresolved,
+    NotThisClass,
+    Instance(u16),
+    Static(u16),
 }
