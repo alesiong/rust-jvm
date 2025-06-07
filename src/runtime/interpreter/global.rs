@@ -1,9 +1,10 @@
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
-use dashmap::DashMap;
-
-use crate::runtime::{self, Heap};
+use crate::runtime::class_loader::BootstrapClassLoader;
+use crate::runtime::Heap;
 
 pub(in crate::runtime) static HEAP: RwLock<Heap> = RwLock::new(Heap::new());
-pub(in crate::runtime) static CLASS_REGISTRY: LazyLock<DashMap<String, Arc<runtime::Class>>> =
-    LazyLock::new(DashMap::new);
+
+// TODO: use rwlock inside
+pub(in crate::runtime) static BOOTSTRAP_CLASS_LOADER: OnceLock<Mutex<BootstrapClassLoader>> =
+    OnceLock::new();

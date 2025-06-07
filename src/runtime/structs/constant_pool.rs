@@ -32,8 +32,8 @@ pub enum ConstantPoolInfo {
     MethodType,
     Dynamic,
     InvokeDynamic,
-    Module,
-    Package,
+    Module(Arc<String>),
+    Package(Arc<String>),
     Empty,
 }
 
@@ -46,7 +46,7 @@ pub struct CpClassInfo {
 
 impl Clone for CpClassInfo {
     fn clone(&self) -> Self {
-        CpClassInfo{
+        CpClassInfo {
             name: Arc::clone(&self.name),
             class: Default::default(),
         }

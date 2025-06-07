@@ -15,6 +15,9 @@ pub enum AttributeInfo {
     Deprecated,
     Signature(Arc<String>),
     Exceptions,
+    Module(Module),
+    ModulePackages(Vec<Arc<String>>),
+    Unknown(Arc<String>),
 }
 
 #[derive(Debug)]
@@ -116,4 +119,16 @@ pub struct LocalVariable {
 #[derive(Debug)]
 pub struct StackMapFrame {
     // TODO:
+}
+
+#[derive(Debug)]
+pub struct Module {
+    pub(crate) exports: Vec<ModuleExport>,
+}
+
+#[derive(Debug)]
+pub struct ModuleExport {
+    pub(crate) exports: Arc<String>,
+    pub(crate) exports_flags: u16,
+    pub(crate) exports_to: Vec<Arc<String>>,
 }

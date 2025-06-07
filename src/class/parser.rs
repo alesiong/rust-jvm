@@ -4,19 +4,13 @@ use nom::{
     bytes::complete::{tag, take},
     combinator::eof,
     error_position,
-    IResult,
     multi::count,
     number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u32, u8},
+    IResult,
 };
 
 use crate::{
-    class::{
-        Class,
-        ConstantPoolInfo,
-        AttributeInfo,
-        FieldInfo,
-        MethodInfo,
-    },
+    class::{AttributeInfo, Class, ConstantPoolInfo, FieldInfo, MethodInfo},
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
 };
 
@@ -109,7 +103,6 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
         5 => {
             let long;
             (input, long) = be_i64(input)?;
-            // TODO: extra cp entry
             ConstantPoolInfo::Long(long)
         }
         6 => {
@@ -165,6 +158,16 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
                 descriptor_index,
             }
         }
+        19 => {
+            let name_index;
+            (input, name_index) = be_u16(input)?;
+            ConstantPoolInfo::Module { name_index }
+        }
+        20 => {
+            let name_index;
+            (input, name_index) = be_u16(input)?;
+            ConstantPoolInfo::Package { name_index }
+        }
         _ => {
             eprintln!("unkonwn constant type {}", tag);
             return Err(nom::Err::Error(error_position!(
@@ -216,17 +219,18 @@ fn parse_attributes(input: &[u8]) -> IResult<&[u8], Vec<AttributeInfo>> {
     Ok((input, attributes))
 }
 
-fn parse_attribute(
-    input: &[u8],
-) -> IResult<&[u8], AttributeInfo> {
+fn parse_attribute(input: &[u8]) -> IResult<&[u8], AttributeInfo> {
     let (input, attribute_name_index) = be_u16(input)?;
     let (input, attribute_length) = be_u32(input)?;
     let (input, info) = take(attribute_length)(input)?;
 
-    Ok((input, AttributeInfo {
-        attribute_name_index,
-        info: info.to_vec(),
-    }))
+    Ok((
+        input,
+        AttributeInfo {
+            attribute_name_index,
+            info: info.to_vec(),
+        },
+    ))
 }
 
 fn parse_methods(input: &[u8]) -> IResult<&[u8], Vec<MethodInfo>> {
@@ -254,4 +258,3 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], MethodInfo> {
         },
     ))
 }
-

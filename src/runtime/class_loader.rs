@@ -5,9 +5,9 @@ use std::sync::{Arc, RwLock};
 use nom::bytes::complete::take;
 use nom::multi::count;
 use nom::number::complete::{be_u16, be_u32, u8};
-use nom::{error_position, IResult};
+use nom::{error_position, IResult, Parser, Slice};
 
-use crate::runtime::global;
+use crate::runtime::{global, Module, ModuleExport};
 use crate::{
     class,
     consts::FieldAccessFlag,
@@ -23,7 +23,10 @@ use crate::{
 
 use super::{ElementValue, LocalVariable};
 
-pub fn parse_class(class_file: &class::Class) -> Arc<runtime::Class> {
+mod bootstrap;
+pub(super) use bootstrap::BootstrapClassLoader;
+
+pub fn parse_class(class_file: &class::Class) -> runtime::Class {
     let mut constant_pool = parse_constant_pool(&class_file.constant_pool);
 
     let super_class = load_super_class(&class_file.constant_pool, class_file.super_class);
@@ -48,7 +51,7 @@ pub fn parse_class(class_file: &class::Class) -> Arc<runtime::Class> {
     let (field_var_size, static_field_size) =
         resolve_this_class_field_ref(&fields, &mut constant_pool, &class_name);
 
-    let class = Arc::new(runtime::Class {
+    runtime::Class {
         access_flags: class_file.access_flags,
         class_name: Arc::clone(&class_name),
         super_class,
@@ -59,19 +62,7 @@ pub fn parse_class(class_file: &class::Class) -> Arc<runtime::Class> {
         constant_pool,
         field_var_size,
         static_fields: RwLock::new(Vec::with_capacity(static_field_size)),
-    });
-    global::CLASS_REGISTRY.insert(String::clone(&class_name), Arc::clone(&class));
-    class
-}
-
-pub fn resolve_class(class_name: &str) -> Arc<runtime::Class> {
-    // TODO: load class if not exists
-    Arc::clone(
-        &global::CLASS_REGISTRY
-            .get(class_name)
-            // TODO: exception
-            .expect("ClassNotFound"),
-    )
+    }
 }
 
 fn load_super_class(
@@ -138,8 +129,12 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::MethodType => Cpi::MethodType,
             class::ConstantPoolInfo::Dynamic => Cpi::Dynamic,
             class::ConstantPoolInfo::InvokeDynamic => Cpi::InvokeDynamic,
-            class::ConstantPoolInfo::Module => Cpi::Module,
-            class::ConstantPoolInfo::Package => Cpi::Package,
+            class::ConstantPoolInfo::Module { name_index } => {
+                Cpi::Module(resolve_cp_utf8(cp, *name_index))
+            }
+            class::ConstantPoolInfo::Package { name_index } => {
+                Cpi::Package(resolve_cp_utf8(cp, *name_index))
+            }
             class::ConstantPoolInfo::Empty => Cpi::Empty,
         };
         constant_pool.push(constant_pool_info);
@@ -234,6 +229,20 @@ fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc
         panic!("cannot find string {}", index);
     };
     Arc::clone(string)
+}
+
+fn resolve_cp_package(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<String> {
+    let class::ConstantPoolInfo::Package { name_index } = &constant_pool[index as usize - 1] else {
+        panic!("cannot find package {}", index);
+    };
+    resolve_cp_utf8(constant_pool, *name_index)
+}
+
+fn resolve_cp_module(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<String> {
+    let class::ConstantPoolInfo::Module { name_index } = &constant_pool[index as usize - 1] else {
+        panic!("cannot find module {}", index);
+    };
+    resolve_cp_utf8(constant_pool, *name_index)
 }
 
 fn resolve_cp_class(constant_pool: &[class::ConstantPoolInfo], class_index: u16) -> CpClassInfo {
@@ -396,13 +405,131 @@ fn parse_attribute<'a>(
             )(input)?;
             runtime::AttributeInfo::LineNumberTable(line_number_table)
         }
+        "Module" => {
+            let (module_name_index, module_flags, module_version_index);
+            (input, module_name_index) = be_u16(input)?;
+            (input, module_flags) = be_u16(input)?;
+            (input, module_version_index) = be_u16(input)?;
+
+            let (requires_count, requires);
+            (input, requires_count) = be_u16(input)?;
+            (input, requires) = count(
+                |input| {
+                    let (input, requires_index) = be_u16(input)?;
+                    let (input, requires_flags) = be_u16(input)?;
+                    let (input, requires_version_index) = be_u16(input)?;
+                    Ok((input, ()))
+                },
+                requires_count as _,
+            )(input)?;
+
+            let (exports_count, exports);
+            (input, exports_count) = be_u16(input)?;
+            (input, exports) = count(
+                |input| {
+                    let (input, exports_index) = be_u16(input)?;
+                    let (input, exports_flags) = be_u16(input)?;
+                    let (input, exports_to_count) = be_u16(input)?;
+                    let (input, exports_to_index) = count(be_u16, exports_to_count as _)(input)?;
+
+                    Ok((
+                        input,
+                        ModuleExport {
+                            exports: resolve_cp_package(constant_pool, exports_index),
+                            exports_flags,
+                            exports_to: exports_to_index
+                                .iter()
+                                .map(|index| resolve_cp_module(constant_pool, *index))
+                                .collect(),
+                        },
+                    ))
+                },
+                exports_count as _,
+            )(input)?;
+
+            let (opens_count, opens);
+            (input, opens_count) = be_u16(input)?;
+            (input, opens) = count(
+                |input| {
+                    let (input, opens_index) = be_u16(input)?;
+                    let (input, opens_flags) = be_u16(input)?;
+                    let (input, opens_to_count) = be_u16(input)?;
+                    let (input, opens_to_index) = count(be_u16, opens_to_count as _)(input)?;
+                    Ok((input, ()))
+                },
+                opens_count as _,
+            )(input)?;
+
+            let (uses_count, uses_index);
+            (input, uses_count) = be_u16(input)?;
+            (input, uses_index) = count(be_u16, uses_count as _)(input)?;
+
+            let (provides_count, provides);
+            (input, provides_count) = be_u16(input)?;
+            (input, provides) = count(
+                |input| {
+                    let (input, provides_index) = be_u16(input)?;
+                    let (input, provides_with_count) = be_u16(input)?;
+                    let (input, provides_with_index) =
+                        count(be_u16, provides_with_count as _)(input)?;
+                    Ok((input, ()))
+                },
+                provides_count as _,
+            )(input)?;
+            runtime::AttributeInfo::Module(Module {
+                // TODO:
+                exports,
+            })
+        }
+        "ModulePackages" => {
+            let (package_count, package_index);
+            (input, package_count) = be_u16(input)?;
+            (input, package_index) = count(be_u16, package_count as _)(input)?;
+
+            let packages = package_index
+                .iter()
+                .map(|package_index| resolve_cp_package(constant_pool, *package_index))
+                .collect();
+
+            runtime::AttributeInfo::ModulePackages(packages)
+        }
+
+        // ModuleHashes
+        //  ModuleHashes_attribute {
+        //    // index to CONSTANT_utf8_info structure in constant pool representing
+        //    // the string "ModuleHashes"
+        //    u2 attribute_name_index;
+        //    u4 attribute_length;
+        //
+        //    // index to CONSTANT_utf8_info structure with algorithm name
+        //    u2 algorithm_index;
+        //
+        //    // the number of entries in the hashes table
+        //    u2 hashes_count;
+        //    {   u2 module_name_index (index to CONSTANT_Module_info structure)
+        //        u2 hash_length;
+        //        u1 hash[hash_length];
+        //    } hashes[hashes_count];
+        //
+        //  }
+        // ModuleTarget
+        // TargetPlatform_attribute {
+        //    // index to CONSTANT_utf8_info structure in constant pool representing
+        //    // the string "ModuleTarget"
+        //    u2 attribute_name_index;
+        //    u4 attribute_length;
+        //
+        //    // index to CONSTANT_utf8_info structure with the target platform
+        //    u2 target_platform_index;
+        //  }
         _ => {
             // TODO:
             eprintln!("Unknown attribute {}", attribute_name);
-            return Err(nom::Err::Error(error_position!(
-                input,
-                nom::error::ErrorKind::Tag
-            )));
+            // return Err(nom::Err::Error(error_position!(
+            //     input,
+            //     nom::error::ErrorKind::Tag
+            // )));
+            runtime::AttributeInfo::Unknown(attribute_name)
         }
     };
 
@@ -414,8 +541,13 @@ fn parse_attribute_raw(
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], runtime::AttributeInfo> + '_ {
     move |input| {
         let (input, attribute_name_index) = be_u16(input)?;
-        let (input, _) = be_u32(input)?;
-        parse_attribute(attribute_name_index, input, constant_pool)
+        let (input, attribute_length) = be_u32(input)?;
+        let (_, attribute) = parse_attribute(
+            attribute_name_index,
+            input.slice(..attribute_length as _),
+            constant_pool,
+        )?;
+        Ok((input.slice((attribute_length as _)..), attribute))
     }
 }
 

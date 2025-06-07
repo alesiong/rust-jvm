@@ -176,11 +176,9 @@ impl Thread {
                     name_and_type,
                 } => {
                     // TODO: resolve method
-                    let class = Arc::clone(&frame.class);
                     self.top_frame = Some(frame);
                     Self::new_frame_inner(
                         &mut self.top_frame,
-                        // TODO: only current class
                         class,
                         &name_and_type.name,
                         &name_and_type.descriptor.parameters,
@@ -194,11 +192,9 @@ impl Thread {
                     name_and_type,
                 } => {
                     // TODO: resolve method
-                    let class = Arc::clone(&frame.class);
                     self.top_frame = Some(frame);
                     Self::new_frame_inner(
                         &mut self.top_frame,
-                        // TODO: only current class
                         class,
                         &name_and_type.name,
                         &name_and_type.descriptor.parameters,

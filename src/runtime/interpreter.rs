@@ -5,12 +5,12 @@ mod instructions;
 pub use frame::*;
 use std::sync::{Arc, RwLock};
 
+use super::{Class, CpClassInfo, CpNameAndTypeInfo};
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
+use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::Heap;
-use crate::runtime::{self, resolve_class};
-
-use super::{CpClassInfo, CpNameAndTypeInfo};
+use crate::runtime::{self};
 
 pub(self) struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
@@ -25,11 +25,11 @@ pub(self) enum Next {
         return_pc: usize,
     },
     InvokeSpecial {
-        class: CpClassInfo,
+        class: Arc<Class>,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
     InvokeStatic {
-        class: CpClassInfo,
+        class: Arc<Class>,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
 }
@@ -110,7 +110,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::LSTORE_3 | inst::DSTORE_3 => {
                     self.store_n_long(3);
                 }
-                inst::ASTORE => {
+                inst::AASTORE => {
                     // SAFETY: rely on class file checking to ensure correct type
                     let value = unsafe { self.frame.stack.pop().unwrap().reference };
                     let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
@@ -120,6 +120,10 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         // TODO: exception
                         panic!("NullPointerException");
                     }
+                }
+                inst::ASTORE | inst::ISTORE | inst::FSTORE => {
+                    let index = self.get_u8_args();
+                    self.frame.locals[index as usize] = self.frame.stack.pop().unwrap();
                 }
 
                 // const
@@ -263,14 +267,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    if class.name != self.frame.class.class_name {
-                        eprintln!("skip non same class call");
-                        self.frame.stack.pop();
-                        *self.pc += 1;
-                        continue;
-                    }
+                    let class_to_invoke = self.resolve_class(&class.name, &class.class);
                     return Next::InvokeSpecial {
-                        class: class.clone(),
+                        class: class_to_invoke,
                         name_and_type: name_and_type.clone(),
                     };
                 }
@@ -283,13 +282,10 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    if class.name != self.frame.class.class_name {
-                        eprintln!("skip non same class call");
-                        *self.pc += 1;
-                        continue;
-                    }
+                    let class_to_invoke = self.resolve_class(&class.name, &class.class);
+
                     return Next::InvokeStatic {
-                        class: class.clone(),
+                        class: class_to_invoke,
                         name_and_type: name_and_type.clone(),
                     };
                 }
@@ -302,7 +298,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         v2: Variable { void: () },
                     };
                 }
-                inst::IRETURN | inst::ARETURN => {
+                inst::IRETURN | inst::ARETURN | inst::FRETURN => {
                     return Next::Return {
                         v1: self.frame.stack.pop().unwrap(),
                         v2: Variable { void: () },
@@ -426,21 +422,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         else {
             panic!("invalid constant type {}", cp_index);
         };
-        // TODO: resolve & load class
-        let class_read = class.read().unwrap();
-        let new_class;
-        if let Some(cls) = &*class_read {
-            new_class = Arc::clone(cls);
-        } else {
-            drop(class_read);
-            let mut class_write = class.write().unwrap();
-            if let Some(cls) = &*class_write {
-                new_class = Arc::clone(cls);
-            } else {
-                new_class = resolve_class(name);
-                class_write.replace(Arc::clone(&new_class));
-            }
-        }
+        let new_class = self.resolve_class(name, class);
 
         let mut fields_types = Vec::new();
 
@@ -565,5 +547,27 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 panic!("ldc2 error, invalid constant type");
             }
         }
+    }
+
+    fn resolve_class(&self, name: &Arc<String>, class: &RwLock<Option<Arc<Class>>>) -> Arc<Class> {
+        let class_read = class.read().unwrap();
+        let new_class;
+        if name == &self.frame.class.class_name {
+            new_class = Arc::clone(&self.frame.class);
+        } else if let Some(cls) = &*class_read {
+            new_class = Arc::clone(cls);
+        } else {
+            drop(class_read);
+            let mut class_write = class.write().unwrap();
+            if let Some(cls) = &*class_write {
+                new_class = Arc::clone(cls);
+            } else {
+                let mut bootstrap_class_loader =
+                    BOOTSTRAP_CLASS_LOADER.get().unwrap().lock().unwrap();
+                new_class = bootstrap_class_loader.resolve_class(name);
+                class_write.replace(Arc::clone(&new_class));
+            }
+        }
+        new_class
     }
 }

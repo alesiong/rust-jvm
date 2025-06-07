@@ -33,7 +33,11 @@ pub enum ConstantPoolInfo {
     MethodType,
     Dynamic,
     InvokeDynamic,
-    Module,
-    Package,
-    Empty
+    Module {
+        name_index: u16,
+    },
+    Package {
+        name_index: u16,
+    },
+    Empty,
 }
