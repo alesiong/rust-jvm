@@ -1,6 +1,6 @@
 use crate::class::parser;
-use crate::runtime;
-use crate::runtime::{AttributeInfo, Class};
+use crate::runtime::AttributeInfo;
+use crate::{descriptor, runtime};
 use dashmap::{DashMap, Entry};
 use std::collections::HashSet;
 use std::fs;
@@ -38,21 +38,37 @@ impl BootstrapClassLoader {
         if let Some(class) = self.class_registry.get(class_name) {
             return Arc::clone(&class);
         }
-        match self.class_registry.entry(class_name.to_string()) {
+        let mut need_init = false;
+        let class = match self.class_registry.entry(class_name.to_string()) {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {
                 let class = Arc::new(load_class(&self.rt_path, &self.modules, class_name));
                 println!("loaded {}", class_name);
                 entry.insert(Arc::clone(&class));
+                need_init = true;
                 class
             }
+        };
+        if need_init {
+            // execute clinit
+            if let Some(clinit) = class.methods.iter().find(|m| m.name.as_ref() == "<clinit>") {
+                println!("clinit found for {:?}", clinit);
+                let mut init_thread = runtime::Thread::new(1024);
+                init_thread.new_frame(
+                    Arc::clone(&class),
+                    &clinit.name,
+                    &clinit.descriptor.parameters,
+                    0,
+                );
+                init_thread.execute();
+            }
         }
+        class
     }
 }
 
 fn load_class(rt_path: &Path, modules: &[Module], name: &str) -> runtime::Class {
-    let class_path = name.replace('.', "/");
-    let package = if let Some((pkg, _)) = class_path.rsplit_once('/') {
+    let package = if let Some((pkg, _)) = name.rsplit_once('/') {
         pkg
     } else {
         ""
@@ -61,7 +77,7 @@ fn load_class(rt_path: &Path, modules: &[Module], name: &str) -> runtime::Class 
         if !module.packages.contains(package) {
             continue;
         }
-        return parse_class(&rt_path.join(&module.name).join(class_path + ".class"));
+        return parse_class(&rt_path.join(&module.name).join(name.to_string() + ".class"));
     }
 
     panic!("class not found {}", name)

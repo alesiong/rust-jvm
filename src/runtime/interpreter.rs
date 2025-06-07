@@ -5,10 +5,11 @@ mod instructions;
 pub use frame::*;
 use std::sync::{Arc, RwLock};
 
-use super::{Class, CpClassInfo, CpNameAndTypeInfo};
+use super::{Class, CpClassInfo, CpNameAndTypeInfo, NativeEnv, NativeVariable};
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
+use crate::runtime::native::NATIVE_FUNCTIONS;
 use crate::runtime::Heap;
 use crate::runtime::{self};
 
@@ -288,6 +289,77 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         class: class_to_invoke,
                         name_and_type: name_and_type.clone(),
                     };
+                }
+                inst::INVOKENATIVE => {
+                    let class_name = self.frame.class.class_name.to_string();
+                    let method_name = self.frame.method_name.to_string();
+                    let param_descriptor = self.frame.param_descriptor.clone();
+
+                    let mut args = Vec::with_capacity(self.frame.locals.len());
+                    let mut i = 0;
+                    let locals = &self.frame.locals;
+                    if !self.frame.is_static {
+                        // SAFETY: rely on class file checking to ensure correct type
+                        args.push(NativeVariable::Reference(unsafe { locals[i].reference }));
+                        i += 1;
+                    }
+
+                    for field in &param_descriptor {
+                        // SAFETY: rely on class file checking to ensure correct type
+                        let arg = unsafe {
+                            match field {
+                                FieldType::Byte => NativeVariable::Byte(locals[i].get_int() as _),
+                                FieldType::Char => NativeVariable::Char(locals[i].get_int() as _),
+                                FieldType::Double => todo!(),
+                                FieldType::Float => NativeVariable::Float(locals[i].float),
+                                FieldType::Int => NativeVariable::Int(locals[i].get_int()),
+                                FieldType::Long => {
+                                    let upper = locals[i].get_int() as i64;
+                                    let lower = locals[i + 1].get_int() as i64;
+                                    i += 1;
+                                    NativeVariable::Long((upper << 32) | lower)
+                                }
+                                FieldType::Object(_) | FieldType::Array(_) => {
+                                    NativeVariable::Reference(locals[i].reference)
+                                }
+                                FieldType::Short => NativeVariable::Short(locals[i].get_int() as _),
+                                FieldType::Boolean => {
+                                    NativeVariable::Boolean(locals[i].get_int() == 1)
+                                }
+                            }
+                        };
+                        i += 1;
+                        args.push(arg);
+                    }
+
+                    let method = NATIVE_FUNCTIONS
+                        .get(&(class_name, method_name, param_descriptor))
+                        .unwrap();
+
+                    let ret = method(NativeEnv {
+                        args,
+                        heap: self.heap,
+                        class: Arc::clone(&self.frame.class),
+                    });
+                    // TODO: check actual return type
+                    let stack = &mut self.frame.stack;
+                    match ret {
+                        None => {}
+                        Some(NativeVariable::Byte(b)) => self.iconst(b as _),
+                        Some(NativeVariable::Boolean(b)) => self.iconst(b as _),
+                        Some(NativeVariable::Char(c)) => self.iconst(c as _),
+                        Some(NativeVariable::Short(s)) => self.iconst(s as _),
+                        Some(NativeVariable::Int(i)) => self.iconst(i),
+                        Some(NativeVariable::Long(l)) => {
+                            let lower = l as i32;
+                            let upper = (l >> 32) as i32;
+                            self.iconst(upper);
+                            self.iconst(lower);
+                        }
+                        Some(NativeVariable::Float(f)) => self.fconst(f),
+                        Some(NativeVariable::Double(_)) => todo!(),
+                        Some(NativeVariable::Reference(r)) => stack.push(Variable { reference: r }),
+                    }
                 }
 
                 // return

@@ -1,12 +1,12 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 
+use super::{instructions, Next};
+use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
 use crate::runtime::interpreter::{global, InterpreterEnv};
-use crate::runtime::Heap;
+use crate::runtime::CodeAttribute;
 use crate::{descriptor::FieldType, runtime};
-
-use super::Next;
 
 pub struct Thread {
     top_frame: Option<Box<Frame>>,
@@ -21,6 +21,9 @@ pub struct Frame {
     pub(super) locals: Vec<Variable>,
     pub(super) stack: Vec<Variable>,
     pub(super) previous_frame: Option<Box<Frame>>,
+    pub(super) method_name: String,
+    pub(super) param_descriptor: Vec<FieldType>,
+    pub(super) is_static: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -87,60 +90,98 @@ impl Thread {
         let Some(method_info) = class.resolve_method(method_name, param_descriptor) else {
             panic!("method not found: {}", method_name);
         };
+
+        // find code attribute
+        let mut code_attribute = None;
         for attr in &method_info.attributes {
             match attr {
                 runtime::AttributeInfo::Code(code) => {
-                    let mut previous_frame = top_frame.take();
-                    let mut locals = Vec::with_capacity(code.max_locals as _);
-                    if let Some(previous_frame) = previous_frame.as_mut() {
-                        let mut param_size = 0;
-                        for param in &method_info.descriptor.parameters {
-                            match param {
-                                FieldType::Long | FieldType::Double => {
-                                    param_size += 2;
-                                }
-                                _ => {
-                                    param_size += 1;
-                                }
-                            }
-                        }
-                        if need_this {
-                            param_size += 1;
-                        }
-                        for v in previous_frame
-                            .stack
-                            .drain((previous_frame.stack.len() - param_size)..)
-                        {
-                            locals.push(v);
-                        }
-                    }
-
-                    let mut frame = Frame {
-                        code: Arc::clone(&code.code),
-                        locals,
-                        stack: Vec::with_capacity(code.max_stack as usize + 2),
-                        return_type: method_info.descriptor.return_type.clone(),
-                        class,
-                        previous_frame,
-                    };
-
-                    // return address
-                    let lower = return_address as u32;
-                    let upper = (return_address >> 32) as u32;
-                    frame.stack.push(Variable {
-                        return_address: upper,
-                    });
-                    frame.stack.push(Variable {
-                        return_address: lower,
-                    });
-
-                    *top_frame = Some(Box::new(frame));
-                    return;
+                    code_attribute = Some(code);
+                    break;
                 }
                 _ => continue,
             }
         }
-        panic!("method code attributes not found: {}", method_name);
+
+        // native method
+        let native_code_attribute;
+        if method_info.access_flags.contains(MethodAccessFlag::NATIVE) {
+            let return_inst = match method_info.descriptor.return_type {
+                None => instructions::RETURN,
+                Some(FieldType::Long) => instructions::LRETURN,
+                Some(
+                    FieldType::Byte
+                    | FieldType::Char
+                    | FieldType::Int
+                    | FieldType::Short
+                    | FieldType::Boolean,
+                ) => instructions::IRETURN,
+                Some(FieldType::Double) => instructions::DRETURN,
+                Some(FieldType::Float) => instructions::FRETURN,
+                Some(FieldType::Object(_) | FieldType::Array(_)) => instructions::ARETURN,
+            };
+
+            native_code_attribute = CodeAttribute {
+                max_stack: 2,
+                max_locals: method_info.descriptor.parameters.len() as u16,
+                code: Arc::new([instructions::INVOKENATIVE, return_inst]),
+                exception_table: vec![],
+                attributes: vec![],
+            };
+            code_attribute = Some(&native_code_attribute)
+        }
+        let Some(code) = code_attribute else {
+            panic!("method code attributes not found: {}", method_name);
+        };
+
+        let mut previous_frame = top_frame.take();
+        let mut locals = Vec::with_capacity(code.max_locals as _);
+        if let Some(previous_frame) = previous_frame.as_mut() {
+            let mut param_size = 0;
+            for param in &method_info.descriptor.parameters {
+                match param {
+                    FieldType::Long | FieldType::Double => {
+                        param_size += 2;
+                    }
+                    _ => {
+                        param_size += 1;
+                    }
+                }
+            }
+            if need_this {
+                param_size += 1;
+            }
+            for v in previous_frame
+                .stack
+                .drain((previous_frame.stack.len() - param_size)..)
+            {
+                locals.push(v);
+            }
+        }
+
+        let mut frame = Frame {
+            code: Arc::clone(&code.code),
+            locals,
+            stack: Vec::with_capacity(code.max_stack as usize + 2),
+            return_type: method_info.descriptor.return_type.clone(),
+            class,
+            previous_frame,
+            method_name: method_name.to_string(),
+            param_descriptor: param_descriptor.to_vec(),
+            is_static: !need_this,
+        };
+
+        // return address
+        let lower = return_address as u32;
+        let upper = (return_address >> 32) as u32;
+        frame.stack.push(Variable {
+            return_address: upper,
+        });
+        frame.stack.push(Variable {
+            return_address: lower,
+        });
+
+        *top_frame = Some(Box::new(frame));
     }
 
     pub fn top_frame(&mut self) -> Option<&mut Frame> {

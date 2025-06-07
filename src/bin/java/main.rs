@@ -1,6 +1,6 @@
 use std::{fs::File, io::Read, sync::Arc};
 
-use jvm::runtime::init_bootstrap_class_loader;
+use jvm::runtime::{init_bootstrap_class_loader, register_natives};
 use jvm::{
     class::parser,
     descriptor,
@@ -9,6 +9,8 @@ use jvm::{
 
 fn main() {
     init_bootstrap_class_loader("data/rt", &["java.base"]);
+    
+    register_natives();
 
     let mut class_file = Vec::new();
     File::open("data/Add.class")
@@ -18,8 +20,6 @@ fn main() {
         .unwrap();
 
     let (_, cls) = parser::class_file(&class_file).unwrap();
-    // println!("{:#?}", cls);
-
     let class = parse_class(&cls);
     // println!("{:#?}", class);
 

@@ -11,7 +11,7 @@ use nom::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldDescriptor(pub(crate) FieldType);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct MethodDescriptor {
     pub(crate) parameters: Vec<FieldType>,
     pub(crate) return_type: ReturnType,
@@ -35,10 +35,7 @@ pub enum FieldType {
 
 impl FieldType {
     pub fn is_long(&self) -> bool {
-        match self {
-            FieldType::Long | FieldType::Double => true,
-            _ => false,
-        }
+        matches!(self, FieldType::Long | FieldType::Double)
     }
 }
 

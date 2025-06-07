@@ -7,7 +7,7 @@ use nom::multi::count;
 use nom::number::complete::{be_u16, be_u32, u8};
 use nom::{error_position, IResult, Parser, Slice};
 
-use crate::runtime::{Module, ModuleExport};
+use crate::runtime::{MethodInfo, Module, ModuleExport};
 use crate::{
     class,
     consts::FieldAccessFlag,
@@ -37,7 +37,7 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         .iter()
         .map(|f| parse_field(&class_file.constant_pool, f))
         .collect();
-    let methods = class_file
+    let methods: Vec<MethodInfo> = class_file
         .methods
         .iter()
         .map(|m| parse_method(&class_file.constant_pool, m))
