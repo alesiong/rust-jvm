@@ -2,16 +2,18 @@ mod frame;
 pub(crate) mod global;
 mod instructions;
 
-pub use frame::*;
-use std::sync::{Arc, RwLock};
-
 use super::{Class, CpClassInfo, CpNameAndTypeInfo, NativeEnv, NativeVariable};
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
+use crate::runtime::Heap;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::native::NATIVE_FUNCTIONS;
-use crate::runtime::Heap;
 use crate::runtime::{self};
+pub use frame::*;
+use nom::number::complete::double;
+use std::cmp::Ordering;
+use std::ops::Rem;
+use std::sync::{Arc, RwLock};
 
 pub(self) struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
@@ -157,13 +159,31 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     self.iconst(0);
                     self.iconst(1);
                 }
+                inst::FCONST_0 => {
+                    self.fconst(0.0);
+                }
+                inst::FCONST_1 => {
+                    self.fconst(1.0);
+                }
+                inst::FCONST_2 => {
+                    self.fconst(2.0);
+                }
+                inst::DCONST_0 => {
+                    self.push_double(0.0);
+                }
+                inst::DCONST_1 => {
+                    self.push_double(1.0);
+                }
                 inst::ACONST_NULL => {
                     self.frame.stack.push(Variable { reference: 0 });
                 }
-
                 inst::BIPUSH => {
                     let byte = self.get_i8_args();
                     self.frame.stack.push(Variable { int: byte as i32 });
+                }
+                inst::SIPUSH => {
+                    let short = self.get_i16_args();
+                    self.frame.stack.push(Variable { int: short as i32 });
                 }
 
                 inst::LDC => {
@@ -198,9 +218,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                 // arithmetic
                 inst::IADD => {
-                    // SAFETY: rely on class file checking to ensure correct type
-                    let a = unsafe { self.frame.stack.pop().unwrap().int };
-                    let b = unsafe { self.frame.stack.pop().unwrap().int };
+                    let a = self.pop_int();
+                    let b = self.pop_int();
                     self.frame.stack.push(Variable {
                         int: a.wrapping_add(b),
                     });
@@ -210,39 +229,390 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let b = self.pop_long();
                     self.push_long(a.wrapping_add(b));
                 }
-                inst::I2L => {
-                    // SAFETY: rely on class file checking to ensure correct type
-                    let v = unsafe { self.frame.stack.pop().unwrap().int };
-                    self.frame.stack.push(Variable {
-                        int: if v.is_negative() { -1 } else { 0 },
-                    });
-                    self.frame.stack.push(Variable { int: v });
+                inst::FADD => {
+                    let a = self.pop_float();
+                    let b = self.pop_float();
+                    self.frame.stack.push(Variable { float: a + b });
                 }
+                inst::DADD => {
+                    let a = self.pop_double();
+                    let b = self.pop_double();
+                    self.push_double(a + b);
+                }
+
+                inst::ISUB => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    self.frame.stack.push(Variable {
+                        int: b.wrapping_add(-a),
+                    });
+                }
+                inst::LSUB => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    self.push_long(b.wrapping_add(-a));
+                }
+                inst::FSUB => {
+                    let a = self.pop_float();
+                    let b = self.pop_float();
+                    self.frame.stack.push(Variable { float: b - a });
+                }
+                inst::DSUB => {
+                    let a = self.pop_double();
+                    let b = self.pop_double();
+                    self.push_double(b - a);
+                }
+
+                inst::IMUL => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    self.push_int(a.wrapping_mul(b));
+                }
+                inst::LMUL => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    self.push_long(a.wrapping_mul(b));
+                }
+                inst::FMUL => {
+                    let a = self.pop_float();
+                    let b = self.pop_float();
+                    self.fconst(a * b);
+                }
+                inst::DMUL => {
+                    let a = self.pop_double();
+                    let b = self.pop_double();
+                    self.push_double(a * b);
+                }
+                inst::IDIV => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    if a == 0 {
+                        // TODO:
+                        panic!("ArithmeticException")
+                    }
+                    self.push_int(b.wrapping_div(a))
+                }
+                inst::LDIV => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    if a == 0 {
+                        // TODO:
+                        panic!("ArithmeticException")
+                    }
+                    self.push_long(b.wrapping_div(a));
+                }
+                inst::FDIV => {
+                    let a = self.pop_float();
+                    let b = self.pop_float();
+                    self.fconst(b / a);
+                }
+                inst::DDIV => {
+                    let a = self.pop_double();
+                    let b = self.pop_double();
+                    self.push_double(b / a);
+                }
+
+                inst::IREM => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    if a == 0 {
+                        // TODO:
+                        panic!("ArithmeticException")
+                    }
+                    self.frame.stack.push(Variable {
+                        int: b.wrapping_rem(a),
+                    });
+                }
+                inst::LREM => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    if a == 0 {
+                        // TODO:
+                        panic!("ArithmeticException")
+                    }
+                    self.push_long(b.wrapping_rem(a));
+                }
+                inst::FREM => {
+                    let a = self.pop_float();
+                    let b = self.pop_float();
+                    self.fconst(b.rem(a));
+                }
+                inst::DREM => {
+                    let a = self.pop_double();
+                    let b = self.pop_double();
+                    self.push_double(b.rem(a));
+                }
+                inst::INEG => {
+                    let a = self.pop_int();
+                    self.push_int(a.wrapping_neg());
+                }
+                inst::LNEG => {
+                    let a = self.pop_long();
+                    self.push_long(a.wrapping_neg());
+                }
+                inst::FNEG => {
+                    let a = self.pop_float();
+                    self.fconst(-a);
+                }
+                inst::DNEG => {
+                    let a = self.pop_double();
+                    self.push_double(-a);
+                }
+
+                inst::IINC => {
+                    let index = self.get_u8_args();
+                    let con = self.get_i8_args();
+                    // SAFETY: rely on class file checking to ensure correct type
+                    unsafe { self.frame.locals[index as usize].int += con as i32 };
+                }
+                inst::ISHL => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    self.push_int(v1 << (v2 & 0x1F));
+                }
+                inst::ISHR => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    self.push_int(v1 >> (v2 & 0x1F));
+                }
+                inst::IUSHR => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    self.push_int(((v1 as u32) >> (v2 & 0x1F)) as i32);
+                }
+                inst::LSHL => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_long();
+                    self.push_long(v1 << (v2 & 0x1F));
+                }
+                inst::LSHR => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_long();
+                    self.push_long(v1 >> (v2 & 0x1F));
+                }
+                inst::LUSHR => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_long();
+                    self.push_long(((v1 as u64) >> (v2 & 0x1F)) as i64);
+                }
+
+                inst::IAND => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    self.push_int(a & b);
+                }
+                inst::LAND => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    self.push_long(a & b);
+                }
+                inst::IOR => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    self.push_int(a | b);
+                }
+                inst::LOR => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    self.push_long(a | b);
+                }
+                inst::IXOR => {
+                    let a = self.pop_int();
+                    let b = self.pop_int();
+                    self.push_int(a ^ b);
+                }
+                inst::LXOR => {
+                    let a = self.pop_long();
+                    let b = self.pop_long();
+                    self.push_long(a ^ b);
+                }
+
+                // conversion
+                inst::I2L => {
+                    let v = self.pop_int();
+                    self.push_long(v as i64);
+                }
+                inst::I2B => {
+                    let v = self.pop_int();
+                    self.frame.stack.push(Variable {
+                        int: v as i8 as i32,
+                    });
+                }
+                inst::I2C => {
+                    let v = self.pop_int();
+                    self.frame.stack.push(Variable {
+                        int: v as u16 as i32,
+                    });
+                }
+                inst::I2S => {
+                    let v = self.pop_int();
+                    self.frame.stack.push(Variable {
+                        int: v as i16 as i32,
+                    });
+                }
+                inst::I2F => {
+                    let v = self.pop_int();
+                    self.frame.stack.push(Variable { float: v as f32 });
+                }
+                inst::I2D => {
+                    let v = self.pop_int();
+                    self.push_double(v as f64);
+                }
+                inst::L2I => {
+                    let v = self.pop_long();
+                    self.push_int(v as i32);
+                }
+                inst::L2F => {
+                    let v = self.pop_long();
+                    self.fconst(v as f32);
+                }
+                inst::L2D => {
+                    let v = self.pop_long();
+                    self.push_double(v as f64);
+                }
+                inst::F2I => {
+                    let v = self.pop_float();
+                    self.push_int(v as i32);
+                }
+                inst::F2L => {
+                    let v = self.pop_float();
+                    self.push_long(v as i64);
+                }
+                inst::F2D => {
+                    let v = self.pop_float();
+                    self.push_double(v as f64);
+                }
+                inst::D2I => {
+                    let v = self.pop_double();
+                    self.push_int(v as i32);
+                }
+                inst::D2L => {
+                    let v = self.pop_double();
+                    self.push_long(v as i64);
+                }
+                inst::D2F => {
+                    let v = self.pop_double();
+                    self.fconst(v as f32);
+                }
+
+                // comparing
+                inst::LCMP => {
+                    let v2 = self.pop_long();
+                    let v1 = self.pop_long();
+                    match v1.cmp(&v2) {
+                        Ordering::Less => self.push_int(-1),
+                        Ordering::Equal => self.push_int(0),
+                        Ordering::Greater => self.push_int(1),
+                    }
+                }
+                inst::FCMPG => self.fcmp(1),
+                inst::FCMPL => self.fcmp(-1),
+                inst::DCMPG => self.dcmp(1),
+                inst::DCMPL => self.dcmp(-1),
 
                 // branch
                 inst::IF_ACMPEQ => {
-                    let offset = self.get_i16_args();
                     // SAFETY: rely on class file checking to ensure correct type
                     let a = unsafe { self.frame.stack.pop().unwrap().reference };
                     let b = unsafe { self.frame.stack.pop().unwrap().reference };
-                    if a == b {
-                        *self.pc = self.pc.wrapping_add_signed((offset - 2) as isize);
+                    if self.goto(a == b) {
                         continue;
                     }
                 }
                 inst::IF_ACMPNE => {
-                    let offset = self.get_i16_args();
                     // SAFETY: rely on class file checking to ensure correct type
                     let a = unsafe { self.frame.stack.pop().unwrap().reference };
                     let b = unsafe { self.frame.stack.pop().unwrap().reference };
-                    if a != b {
-                        *self.pc = self.pc.wrapping_add_signed((offset - 2) as isize);
+                    if self.goto(a != b) {
+                        continue;
+                    }
+                }
+                inst::IF_ICMPEQ => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    if self.goto(v1 == v2) {
+                        continue;
+                    }
+                }
+                inst::IF_ICMPNE => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    if self.goto(v1 != v2) {
+                        continue;
+                    }
+                }
+                inst::IF_ICMPLT => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    if self.goto(v1 < v2) {
+                        continue;
+                    }
+                }
+                inst::IF_ICMPGT => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    if self.goto(v1 > v2) {
+                        continue;
+                    }
+                }
+                inst::IF_ICMPLE => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    if self.goto(v1 <= v2) {
+                        continue;
+                    }
+                }
+                inst::IF_ICMPGE => {
+                    let v2 = self.pop_int();
+                    let v1 = self.pop_int();
+                    if self.goto(v1 >= v2) {
+                        continue;
+                    }
+                }
+                inst::IFEQ => {
+                    let v2 = 0;
+                    let v1 = self.pop_int();
+                    if self.goto(v1 == v2) {
+                        continue;
+                    }
+                }
+                inst::IFNE => {
+                    let v2 = 0;
+                    let v1 = self.pop_int();
+                    if self.goto(v1 != v2) {
+                        continue;
+                    }
+                }
+                inst::IFLT => {
+                    let v2 = 0;
+                    let v1 = self.pop_int();
+                    if self.goto(v1 < v2) {
+                        continue;
+                    }
+                }
+                inst::IFGT => {
+                    let v2 = 0;
+                    let v1 = self.pop_int();
+                    if self.goto(v1 > v2) {
+                        continue;
+                    }
+                }
+                inst::IFLE => {
+                    let v2 = 0;
+                    let v1 = self.pop_int();
+                    if self.goto(v1 <= v2) {
+                        continue;
+                    }
+                }
+                inst::IFGE => {
+                    let v2 = 0;
+                    let v1 = self.pop_int();
+                    if self.goto(v1 >= v2) {
                         continue;
                     }
                 }
                 inst::GOTO => {
-                    let offset = self.get_i16_args();
-                    *self.pc = self.pc.wrapping_add_signed((offset - 2) as isize);
+                    self.goto(true);
                     continue;
                 }
 
@@ -291,75 +661,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     };
                 }
                 inst::INVOKENATIVE => {
-                    let class_name = self.frame.class.class_name.to_string();
-                    let method_name = self.frame.method_name.to_string();
-                    let param_descriptor = self.frame.param_descriptor.clone();
-
-                    let mut args = Vec::with_capacity(self.frame.locals.len());
-                    let mut i = 0;
-                    let locals = &self.frame.locals;
-                    if !self.frame.is_static {
-                        // SAFETY: rely on class file checking to ensure correct type
-                        args.push(NativeVariable::Reference(unsafe { locals[i].reference }));
-                        i += 1;
-                    }
-
-                    for field in &param_descriptor {
-                        // SAFETY: rely on class file checking to ensure correct type
-                        let arg = unsafe {
-                            match field {
-                                FieldType::Byte => NativeVariable::Byte(locals[i].get_int() as _),
-                                FieldType::Char => NativeVariable::Char(locals[i].get_int() as _),
-                                FieldType::Double => todo!(),
-                                FieldType::Float => NativeVariable::Float(locals[i].float),
-                                FieldType::Int => NativeVariable::Int(locals[i].get_int()),
-                                FieldType::Long => {
-                                    let upper = locals[i].get_int() as i64;
-                                    let lower = locals[i + 1].get_int() as i64;
-                                    i += 1;
-                                    NativeVariable::Long((upper << 32) | lower)
-                                }
-                                FieldType::Object(_) | FieldType::Array(_) => {
-                                    NativeVariable::Reference(locals[i].reference)
-                                }
-                                FieldType::Short => NativeVariable::Short(locals[i].get_int() as _),
-                                FieldType::Boolean => {
-                                    NativeVariable::Boolean(locals[i].get_int() == 1)
-                                }
-                            }
-                        };
-                        i += 1;
-                        args.push(arg);
-                    }
-
-                    let method = NATIVE_FUNCTIONS
-                        .get(&(class_name, method_name, param_descriptor))
-                        .unwrap();
-
-                    let ret = method(NativeEnv {
-                        args,
-                        heap: self.heap,
-                        class: Arc::clone(&self.frame.class),
-                    });
-                    // TODO: check actual return type
-                    let stack = &mut self.frame.stack;
-                    match ret {
-                        None => {}
-                        Some(NativeVariable::Byte(b)) => self.iconst(b as _),
-                        Some(NativeVariable::Boolean(b)) => self.iconst(b as _),
-                        Some(NativeVariable::Char(c)) => self.iconst(c as _),
-                        Some(NativeVariable::Short(s)) => self.iconst(s as _),
-                        Some(NativeVariable::Int(i)) => self.iconst(i),
-                        Some(NativeVariable::Long(l)) => {
-                            let lower = l as i32;
-                            let upper = (l >> 32) as i32;
-                            self.iconst(upper);
-                            self.iconst(lower);
-                        }
-                        Some(NativeVariable::Float(f)) => self.fconst(f),
-                        Some(NativeVariable::Double(_)) => todo!(),
-                        Some(NativeVariable::Reference(r)) => stack.push(Variable { reference: r }),
-                    }
+                    self.invoke_native();
                 }
 
                 // return
@@ -377,7 +679,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         return_pc: self.pop_return_addr(),
                     };
                 }
-                inst::LRETURN => {
+                inst::LRETURN | inst::DRETURN => {
                     return Next::Return {
                         v2: self.frame.stack.pop().unwrap(),
                         v1: self.frame.stack.pop().unwrap(),
@@ -472,19 +774,50 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     #[inline]
-    fn pop_long(&mut self) -> i64 {
-        let lower = unsafe { self.frame.stack.pop().unwrap().int } as i64;
-        let upper = unsafe { self.frame.stack.pop().unwrap().int } as i64;
+    fn pop_int(&mut self) -> i32 {
+        // SAFETY: rely on class file checking to ensure correct type
+        unsafe { self.frame.stack.pop().unwrap().get_int() }
+    }
 
-        (upper << 32) | lower
+    #[inline]
+    fn push_int(&mut self, i: i32) {
+        self.frame.stack.push(Variable { int: i });
+    }
+
+    #[inline]
+    fn pop_float(&mut self) -> f32 {
+        // SAFETY: rely on class file checking to ensure correct type
+        unsafe { self.frame.stack.pop().unwrap().float }
+    }
+
+    #[inline]
+    fn pop_long(&mut self) -> i64 {
+        let i2 = self.frame.stack.pop().unwrap();
+        let i1 = self.frame.stack.pop().unwrap();
+        // SAFETY: rely on class file checking to ensure correct type
+        unsafe { Variable::get_long(i1, i2) }
     }
 
     #[inline]
     fn push_long(&mut self, l: i64) {
-        let lower = l as i32;
-        let upper = (l >> 32) as i32;
-        self.iconst(upper);
-        self.iconst(lower);
+        let (upper, lower) = Variable::put_long(l);
+        self.frame.stack.push(upper);
+        self.frame.stack.push(lower);
+    }
+
+    #[inline]
+    fn pop_double(&mut self) -> f64 {
+        let i2 = self.frame.stack.pop().unwrap();
+        let i1 = self.frame.stack.pop().unwrap();
+        // SAFETY: rely on class file checking to ensure correct type
+        unsafe { Variable::get_double(i1, i2) }
+    }
+
+    #[inline]
+    fn push_double(&mut self, f: f64) {
+        let (upper, lower) = Variable::put_double(f);
+        self.frame.stack.push(upper);
+        self.frame.stack.push(lower);
     }
 
     fn new_object(&mut self) {
@@ -579,6 +912,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
             // TODO: NPE
+            panic!("NullPointerException")
         }
         let this_obj = self.heap.read().unwrap().get(this);
         self.frame
@@ -614,10 +948,112 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             runtime::ConstantPoolInfo::Long(l) => {
                 self.push_long(*l);
             }
-            runtime::ConstantPoolInfo::Double(d) => todo!(),
+            runtime::ConstantPoolInfo::Double(d) => {
+                self.push_double(*d);
+            }
             _ => {
                 panic!("ldc2 error, invalid constant type");
             }
+        }
+    }
+
+    fn fcmp(&mut self, nan: i32) {
+        let v2 = self.pop_float();
+        let v1 = self.pop_float();
+        match v1.partial_cmp(&v2) {
+            None => self.push_int(nan),
+            Some(Ordering::Less) => self.push_int(-1),
+            Some(Ordering::Equal) => self.push_int(0),
+            Some(Ordering::Greater) => self.push_int(1),
+        }
+    }
+
+    fn dcmp(&mut self, nan: i32) {
+        let v2 = self.pop_double();
+        let v1 = self.pop_double();
+        match v1.partial_cmp(&v2) {
+            None => self.push_int(nan),
+            Some(Ordering::Less) => self.push_int(-1),
+            Some(Ordering::Equal) => self.push_int(0),
+            Some(Ordering::Greater) => self.push_int(1),
+        }
+    }
+
+    fn goto(&mut self, jump: bool) -> bool {
+        let offset = self.get_i16_args();
+        if jump {
+            *self.pc = self.pc.wrapping_add_signed((offset - 2) as isize);
+            return true;
+        }
+        false
+    }
+
+    fn invoke_native(&mut self) {
+        let class_name = self.frame.class.class_name.to_string();
+        let method_name = self.frame.method_name.to_string();
+        let param_descriptor = self.frame.param_descriptor.clone();
+
+        let mut args = Vec::with_capacity(self.frame.locals.len());
+        let mut i = 0;
+        let locals = &self.frame.locals;
+        if !self.frame.is_static {
+            // this arg
+            // SAFETY: rely on class file checking to ensure correct type
+            args.push(NativeVariable::Reference(unsafe { locals[i].reference }));
+            i += 1;
+        }
+
+        for field in &param_descriptor {
+            // SAFETY: rely on class file checking to ensure correct type
+            let arg = unsafe {
+                match field {
+                    FieldType::Byte => NativeVariable::Byte(locals[i].get_int() as _),
+                    FieldType::Char => NativeVariable::Char(locals[i].get_int() as _),
+                    FieldType::Double => {
+                        let double = Variable::get_double(locals[i], locals[i + 1]);
+                        i += 1;
+                        NativeVariable::Double(double)
+                    }
+                    FieldType::Float => NativeVariable::Float(locals[i].float),
+                    FieldType::Int => NativeVariable::Int(locals[i].get_int()),
+                    FieldType::Long => {
+                        let long = Variable::get_long(locals[i], locals[i + 1]);
+                        i += 1;
+                        NativeVariable::Long(long)
+                    }
+                    FieldType::Object(_) | FieldType::Array(_) => {
+                        NativeVariable::Reference(locals[i].reference)
+                    }
+                    FieldType::Short => NativeVariable::Short(locals[i].get_int() as _),
+                    FieldType::Boolean => NativeVariable::Boolean(locals[i].get_int() == 1),
+                }
+            };
+            i += 1;
+            args.push(arg);
+        }
+
+        let method = NATIVE_FUNCTIONS
+            .get(&(class_name, method_name, param_descriptor))
+            .unwrap();
+
+        let ret = method(NativeEnv {
+            args,
+            heap: self.heap,
+            class: Arc::clone(&self.frame.class),
+        });
+        // TODO: check actual return type
+        let stack = &mut self.frame.stack;
+        match ret {
+            None => {}
+            Some(NativeVariable::Byte(b)) => self.iconst(b as _),
+            Some(NativeVariable::Boolean(b)) => self.iconst(b as _),
+            Some(NativeVariable::Char(c)) => self.iconst(c as _),
+            Some(NativeVariable::Short(s)) => self.iconst(s as _),
+            Some(NativeVariable::Int(i)) => self.iconst(i),
+            Some(NativeVariable::Long(l)) => self.push_long(l),
+            Some(NativeVariable::Float(f)) => self.fconst(f),
+            Some(NativeVariable::Double(d)) => self.push_double(d),
+            Some(NativeVariable::Reference(r)) => stack.push(Variable { reference: r }),
         }
     }
 

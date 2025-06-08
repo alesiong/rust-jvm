@@ -30,6 +30,7 @@ pub(super) use bootstrap::BootstrapClassLoader;
 pub fn parse_class(class_file: &class::Class) -> runtime::Class {
     let mut constant_pool = parse_constant_pool(&class_file.constant_pool);
 
+    // TODO: super_class should be provided by class loader
     let super_class = load_super_class(&class_file.constant_pool, class_file.super_class);
     let interfaces = load_interfaces(&class_file.constant_pool, &class_file.interfaces);
     let fields: Vec<_> = class_file
@@ -138,6 +139,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
                 name_index,
                 descriptor_index,
             } => Cpi::NameAndType(resolve_cp_name_and_type(cp, *name_index, *descriptor_index)),
+            // TODO: fill
             class::ConstantPoolInfo::MethodHandle => Cpi::MethodHandle,
             class::ConstantPoolInfo::MethodType => Cpi::MethodType,
             class::ConstantPoolInfo::Dynamic => Cpi::Dynamic,

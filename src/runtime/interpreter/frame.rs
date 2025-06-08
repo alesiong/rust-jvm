@@ -1,11 +1,11 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 
-use super::{instructions, Next};
+use super::{Next, instructions};
 use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
-use crate::runtime::interpreter::{global, InterpreterEnv};
-use crate::runtime::CodeAttribute;
+use crate::runtime::interpreter::{InterpreterEnv, global};
+use crate::runtime::{CodeAttribute, NativeVariable};
 use crate::{descriptor::FieldType, runtime};
 
 pub struct Thread {
@@ -49,8 +49,44 @@ impl Variable {
     /// # Safety
     ///
     /// should ensure the underlying type is int
+    #[inline]
     pub unsafe fn get_int(self) -> i32 {
-        self.int
+        unsafe { self.int }
+    }
+
+    /// # Safety
+    ///
+    /// should ensure the underlying type is long
+    #[inline]
+    pub unsafe fn get_long(pre: Self, suf: Self) -> i64 {
+        let upper = unsafe { pre.get_int() as i64 };
+        let lower = unsafe { suf.get_int() as i64 };
+        (upper << 32) | lower
+    }
+
+    #[inline]
+    pub fn put_long(long: i64) -> (Variable, Variable) {
+        let lower = long as i32;
+        let upper = (long >> 32) as i32;
+        (Variable { int: upper }, Variable { int: lower })
+    }
+
+    /// # Safety
+    ///
+    /// should ensure the underlying type is double
+    #[inline]
+    pub unsafe fn get_double(pre: Self, suf: Self) -> f64 {
+        let upper = unsafe { pre.get_int() as u64 };
+        let lower = unsafe { suf.get_int() as u64 };
+        f64::from_bits((upper << 32) | lower)
+    }
+
+    #[inline]
+    pub fn put_double(double: f64) -> (Variable, Variable) {
+        let long = double.to_bits();
+        let lower = long as i32;
+        let upper = (long >> 32) as i32;
+        (Variable { int: upper }, Variable { int: lower })
     }
 }
 
