@@ -2,7 +2,7 @@ use paste::paste;
 macro_rules! make_instruction {
     ($inst: ident $byte: tt) => {
         paste!{
-            #[allow(unused)]
+            // #[allow(unused)]
             pub(crate) const [<$inst:upper>]: u8 = [<"0x" $byte>];
         }
     };

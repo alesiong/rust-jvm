@@ -4,6 +4,7 @@ mod instructions;
 
 use super::{Class, CpClassInfo, CpNameAndTypeInfo, NativeEnv, NativeVariable};
 use crate::consts::FieldAccessFlag;
+use crate::descriptor::FieldType::{Boolean, Byte, Char, Double, Float, Int, Long, Short};
 use crate::descriptor::{self, FieldType, MethodDescriptor};
 use crate::runtime::Heap;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
@@ -72,6 +73,14 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::LLOAD_3 | inst::DLOAD_3 => {
                     self.load_n_long(3);
                 }
+                inst::ALOAD | inst::ILOAD | inst::FLOAD => {
+                    let index = self.get_u8_args();
+                    self.load_n(index as usize);
+                }
+                inst::LLOAD | inst::DLOAD => {
+                    let index = self.get_u8_args();
+                    self.load_n_long(index as usize);
+                }
                 inst::AALOAD => {
                     // SAFETY: rely on class file checking to ensure correct type
                     let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
@@ -81,11 +90,25 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         // TODO: exception
                         panic!("NullPointerException");
                     }
-                    // self.frame.stack.push(value);
+                    let arr_object = self.heap.read().unwrap().get(arr);
+                    // TODO: check for array type
+                    let value = unsafe { arr_object.get_array_index::<u32>(index as _) };
+
+                    self.frame.stack.push(Variable { reference: value });
                 }
-                inst::ALOAD | inst::ILOAD | inst::FLOAD => {
-                    let index = self.get_u8_args();
-                    self.frame.stack.push(self.frame.locals[index as usize]);
+                inst::IALOAD => {
+                    let index = self.pop_int();
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let arr = unsafe { self.frame.stack.pop().unwrap().reference };
+                    // TODO: get arr[index]
+                    if arr == 0 {
+                        // TODO: exception
+                        panic!("NullPointerException");
+                    }
+                    let arr_object = self.heap.read().unwrap().get(arr);
+                    // TODO: check for array type
+                    let value = unsafe { arr_object.get_array_index::<i32>(index as _) };
+                    self.push_int(value);
                 }
 
                 // store
@@ -126,7 +149,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 }
                 inst::ASTORE | inst::ISTORE | inst::FSTORE => {
                     let index = self.get_u8_args();
-                    self.frame.locals[index as usize] = self.frame.stack.pop().unwrap();
+                    self.store_n(index as usize);
+                }
+                inst::LSTORE | inst::DSTORE => {
+                    let index = self.get_u8_args();
+                    self.store_n_long(index as usize);
                 }
 
                 // const
@@ -208,6 +235,52 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                             .last()
                             .expect("stack must not be empty when dup"),
                     );
+                }
+                inst::DUP_X1 => {
+                    let v1 = self.frame.stack.pop().unwrap();
+                    let v2 = self.frame.stack.pop().unwrap();
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
+                }
+                inst::DUP_X2 => {
+                    let v1 = self.frame.stack.pop().unwrap();
+                    let v2 = self.frame.stack.pop().unwrap();
+                    let v3 = self.frame.stack.pop().unwrap();
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v3);
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
+                }
+                inst::DUP2 => {
+                    let v1 = self.frame.stack.pop().unwrap();
+                    let v2 = self.frame.stack.pop().unwrap();
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v2);
+                }
+                inst::DUP2_X1 => {
+                    let v1 = self.frame.stack.pop().unwrap();
+                    let v2 = self.frame.stack.pop().unwrap();
+                    let v3 = self.frame.stack.pop().unwrap();
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v3);
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
+                }
+                inst::DUP2_X2 => {
+                    let v1 = self.frame.stack.pop().unwrap();
+                    let v2 = self.frame.stack.pop().unwrap();
+                    let v3 = self.frame.stack.pop().unwrap();
+                    let v4 = self.frame.stack.pop().unwrap();
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v4);
+                    self.frame.stack.push(v3);
+                    self.frame.stack.push(v2);
+                    self.frame.stack.push(v1);
                 }
                 inst::POP => {
                     self.frame.stack.truncate(self.frame.stack.len() - 1);
@@ -611,6 +684,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         continue;
                     }
                 }
+                inst::IFNULL => {
+                    let a = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if self.goto(a == 0) {
+                        continue;
+                    }
+                }
+                inst::IFNONNULL => {
+                    let a = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if self.goto(a != 0) {
+                        continue;
+                    }
+                }
                 inst::GOTO => {
                     self.goto(true);
                     continue;
@@ -619,6 +704,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 // oop
                 inst::NEW => {
                     self.new_object();
+                }
+                inst::NEWARRAY => {
+                    self.new_array();
                 }
                 inst::PUTFIELD => {
                     self.put_field();
@@ -843,7 +931,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let mut heap = self.heap.write().unwrap();
         let id = unsafe {
-            heap.allocate(new_class.field_var_size, Arc::clone(&new_class), |i, v| {
+            heap.allocate_object(new_class.field_var_size, Arc::clone(&new_class), |i, v| {
                 use FieldType::*;
                 let var = match fields_types[i].0 {
                     Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
@@ -853,6 +941,40 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                 v.write(var);
             })
+        };
+        self.frame.stack.push(Variable { reference: id });
+    }
+
+    fn new_array(&mut self) {
+        let atype = self.get_i8_args();
+        let count = self.pop_int();
+        if count < 0 {
+            // TODO: exception
+            panic!("NegativeArraySizeException {}", count);
+        }
+
+        // TODO: build array class
+
+        let mut heap = self.heap.write().unwrap();
+
+        // FIXME:
+        let new_class = Arc::clone(&self.frame.class);
+        let id = match atype {
+            // bool, byte
+            4 | 8 => heap.allocate_array::<i8>(count as _, new_class),
+            // char
+            5 => heap.allocate_array::<u16>(count as _, new_class),
+            // float
+            6 => heap.allocate_array::<f32>(count as _, new_class),
+            // double
+            7 => heap.allocate_array::<f64>(count as _, new_class),
+            // short
+            9 => heap.allocate_array::<i16>(count as _, new_class),
+            // int
+            10 => heap.allocate_array::<i32>(count as _, new_class),
+            // long
+            11 => heap.allocate_array::<i64>(count as _, new_class),
+            _ => panic!("invalid array type {}", atype),
         };
         self.frame.stack.push(Variable { reference: id });
     }
