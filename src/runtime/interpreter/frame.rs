@@ -1,11 +1,11 @@
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use super::{Next, instructions};
+use super::{instructions, Next};
 use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
-use crate::runtime::interpreter::{InterpreterEnv, global};
-use crate::runtime::{CodeAttribute, NativeVariable};
+use crate::runtime::interpreter::{global, InterpreterEnv};
+use crate::runtime::CodeAttribute;
 use crate::{descriptor::FieldType, runtime};
 
 pub struct Thread {

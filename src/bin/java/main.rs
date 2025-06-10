@@ -1,6 +1,6 @@
 use std::{fs::File, io::Read, sync::Arc};
 
-use jvm::runtime::{init_bootstrap_class_loader, register_natives};
+use jvm::runtime::{ClassPathModule, JModModule, init_bootstrap_class_loader, register_natives};
 use jvm::{
     class::parser,
     descriptor,
@@ -8,7 +8,14 @@ use jvm::{
 };
 
 fn main() {
-    init_bootstrap_class_loader("data/rt", &["java.base"]);
+
+    init_bootstrap_class_loader(vec![
+        Box::new(JModModule::new(
+            "/opt/homebrew/Cellar/openjdk@17/17.0.15/libexec/openjdk.jdk/Contents/Home/",
+            "java.base",
+        )),
+        Box::new(ClassPathModule::new("main", "data/")),
+    ]);
     
     register_natives();
 

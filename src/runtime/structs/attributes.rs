@@ -67,25 +67,25 @@ pub enum Const {
 }
 
 impl Const {
-    pub(crate) fn to_byte(self) -> Self {
+    pub(crate) fn into_byte(self) -> Self {
         let Const::Int(v) = self else {
             panic!("not int type");
         };
         Self::Byte(v)
     }
-    pub(crate) fn to_char(self) -> Self {
+    pub(crate) fn into_char(self) -> Self {
         let Const::Int(v) = self else {
             panic!("not int type");
         };
         Self::Char(v)
     }
-    pub(crate) fn to_short(self) -> Self {
+    pub(crate) fn into_short(self) -> Self {
         let Const::Int(v) = self else {
             panic!("not int type");
         };
         Self::Short(v)
     }
-    pub(crate) fn to_boolean(self) -> Self {
+    pub(crate) fn into_boolean(self) -> Self {
         let Const::Int(v) = self else {
             panic!("not int type");
         };

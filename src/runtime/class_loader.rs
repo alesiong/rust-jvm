@@ -5,15 +5,15 @@ use std::sync::{Arc, RwLock};
 use nom::bytes::complete::take;
 use nom::multi::count;
 use nom::number::complete::{be_u16, be_u32, u8};
-use nom::{error_position, IResult, Parser, Slice};
+use nom::{IResult, Slice, error_position};
 
 use crate::runtime::{MethodInfo, Module, ModuleExport};
 use crate::{
     class,
     consts::FieldAccessFlag,
     descriptor::{
-        self, parse_field_descriptor, parse_method_descriptor, parse_return_type_descriptor,
-        FieldDescriptor, MethodDescriptor,
+        self, FieldDescriptor, MethodDescriptor, parse_field_descriptor, parse_method_descriptor,
+        parse_return_type_descriptor,
     },
     runtime::{
         self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldIndex,
@@ -26,6 +26,7 @@ use super::{ElementValue, LocalVariable};
 mod bootstrap;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 pub(super) use bootstrap::BootstrapClassLoader;
+pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
 pub fn parse_class(class_file: &class::Class) -> runtime::Class {
     let mut constant_pool = parse_constant_pool(&class_file.constant_pool);
@@ -63,7 +64,7 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         attributes,
         constant_pool,
         field_var_size,
-        static_fields: RwLock::new(Vec::with_capacity(static_field_size)),
+        static_fields: RwLock::new(vec![]),
     }
 }
 
@@ -140,10 +141,10 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
                 descriptor_index,
             } => Cpi::NameAndType(resolve_cp_name_and_type(cp, *name_index, *descriptor_index)),
             // TODO: fill
-            class::ConstantPoolInfo::MethodHandle => Cpi::MethodHandle,
-            class::ConstantPoolInfo::MethodType => Cpi::MethodType,
-            class::ConstantPoolInfo::Dynamic => Cpi::Dynamic,
-            class::ConstantPoolInfo::InvokeDynamic => Cpi::InvokeDynamic,
+            class::ConstantPoolInfo::MethodHandle { .. } => Cpi::MethodHandle,
+            class::ConstantPoolInfo::MethodType { .. } => Cpi::MethodType,
+            class::ConstantPoolInfo::Dynamic { .. } => Cpi::Dynamic,
+            class::ConstantPoolInfo::InvokeDynamic { .. } => Cpi::InvokeDynamic,
             class::ConstantPoolInfo::Module { name_index } => {
                 Cpi::Module(resolve_cp_utf8(cp, *name_index))
             }
@@ -685,10 +686,10 @@ fn parse_element_value(
         let value = match tag {
             b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z' | b's' => {
                 let converter = match tag {
-                    b'B' => Const::to_byte,
-                    b'C' => Const::to_char,
-                    b'S' => Const::to_short,
-                    b'Z' => Const::to_boolean,
+                    b'B' => Const::into_byte,
+                    b'C' => Const::into_char,
+                    b'S' => Const::into_short,
+                    b'Z' => Const::into_boolean,
                     b'D' | b'F' | b'I' | b'J' | b's' => identity,
                     _ => unreachable!("all case covered"),
                 };

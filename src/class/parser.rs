@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
+use crate::{
+    class::{AttributeInfo, Class, ConstantPoolInfo, FieldInfo, MethodInfo},
+    consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
+};
 use nom::{
+    IResult,
     bytes::complete::{tag, take},
     combinator::eof,
     error_position,
     multi::count,
     number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u32, u8},
-    IResult,
-};
-
-use crate::{
-    class::{AttributeInfo, Class, ConstantPoolInfo, FieldInfo, MethodInfo},
-    consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
 };
 
 pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
@@ -156,6 +155,38 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
             ConstantPoolInfo::NameAndType {
                 name_index,
                 descriptor_index,
+            }
+        }
+        15 => {
+            let (reference_kind, reference_index);
+            (input, reference_kind) = u8(input)?;
+            (input, reference_index) = be_u16(input)?;
+            ConstantPoolInfo::MethodHandle {
+                reference_kind,
+                reference_index,
+            }
+        }
+        16 => {
+            let descriptor_index;
+            (input, descriptor_index) = be_u16(input)?;
+            ConstantPoolInfo::MethodType { descriptor_index }
+        }
+        17 => {
+            let (bootstrap_method_attr_index, name_and_type_index);
+            (input, bootstrap_method_attr_index) = be_u16(input)?;
+            (input, name_and_type_index) = be_u16(input)?;
+            ConstantPoolInfo::Dynamic {
+                bootstrap_method_attr_index,
+                name_and_type_index,
+            }
+        }
+        18 => {
+            let (bootstrap_method_attr_index, name_and_type_index);
+            (input, bootstrap_method_attr_index) = be_u16(input)?;
+            (input, name_and_type_index) = be_u16(input)?;
+            ConstantPoolInfo::InvokeDynamic {
+                bootstrap_method_attr_index,
+                name_and_type_index,
             }
         }
         19 => {

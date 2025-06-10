@@ -122,7 +122,7 @@ impl Heap {
         assert!(self.next_id < u32::MAX - 1, "heap oom");
         let id = self.next_id;
         let (layout, _) = Layout::new::<Arc<Class>>()
-            .extend(Layout::array::<UnsafeCell<Variable>>(size).unwrap())
+            .extend(Layout::array::<UnsafeCell<T>>(size).unwrap())
             .unwrap();
         let layout = layout.pad_to_align();
         let ptr = unsafe { alloc(layout) };

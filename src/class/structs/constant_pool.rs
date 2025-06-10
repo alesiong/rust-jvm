@@ -29,10 +29,21 @@ pub enum ConstantPoolInfo {
         name_index: u16,
         descriptor_index: u16,
     },
-    MethodHandle,
-    MethodType,
-    Dynamic,
-    InvokeDynamic,
+    MethodHandle {
+        reference_kind: u8,
+        reference_index: u16,
+    },
+    MethodType {
+        descriptor_index: u16,
+    },
+    Dynamic {
+        bootstrap_method_attr_index: u16,
+        name_and_type_index: u16,
+    },
+    InvokeDynamic {
+        bootstrap_method_attr_index: u16,
+        name_and_type_index: u16,
+    },
     Module {
         name_index: u16,
     },

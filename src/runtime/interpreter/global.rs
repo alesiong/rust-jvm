@@ -1,4 +1,4 @@
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 
 use crate::runtime::class_loader::BootstrapClassLoader;
 use crate::runtime::Heap;

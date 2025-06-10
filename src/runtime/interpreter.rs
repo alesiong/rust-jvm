@@ -4,25 +4,23 @@ mod instructions;
 
 use super::{Class, CpClassInfo, CpNameAndTypeInfo, NativeEnv, NativeVariable};
 use crate::consts::FieldAccessFlag;
-use crate::descriptor::FieldType::{Boolean, Byte, Char, Double, Float, Int, Long, Short};
 use crate::descriptor::{self, FieldType, MethodDescriptor};
-use crate::runtime::Heap;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::native::NATIVE_FUNCTIONS;
+use crate::runtime::Heap;
 use crate::runtime::{self};
 pub use frame::*;
-use nom::number::complete::double;
 use std::cmp::Ordering;
 use std::ops::Rem;
 use std::sync::{Arc, RwLock};
 
-pub(self) struct InterpreterEnv<'t: 'f, 'f> {
+struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
     frame: &'f mut Frame,
     heap: &'static RwLock<Heap>,
 }
 
-pub(self) enum Next {
+enum Next {
     Return {
         v1: Variable,
         v2: Variable,
