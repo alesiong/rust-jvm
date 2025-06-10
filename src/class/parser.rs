@@ -5,7 +5,7 @@ use crate::{
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
 };
 use nom::{
-    IResult,
+    IResult, Parser,
     bytes::complete::{tag, take},
     combinator::eof,
     error_position,
@@ -32,8 +32,7 @@ pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
         Class {
             major_version: major,
             minor_version: minor,
-            // SAFETY: extra bits allowed
-            access_flags: unsafe { ClassAccessFlag::from_bits_unchecked(access_flags) },
+            access_flags: ClassAccessFlag::from_bits_retain(access_flags),
             this_class,
             super_class,
             constant_pool,
@@ -46,7 +45,7 @@ pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
 }
 
 fn parse_header(input: &[u8]) -> IResult<&[u8], (u16, u16)> {
-    let (input, _) = tag(&[0xca, 0xfe, 0xba, 0xbe])(input)?;
+    let (input, _) = tag(&[0xcau8, 0xfe, 0xba, 0xbe] as &[u8])(input)?;
     let (input, minor) = be_u16(input)?;
     let (input, major) = be_u16(input)?;
     Ok((input, (minor, major)))
@@ -213,14 +212,14 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
 fn parse_interfaces(input: &[u8]) -> IResult<&[u8], Vec<u16>> {
     let (input, interface_count) = be_u16(input)?;
 
-    let (input, interfaces) = count(be_u16, interface_count as _)(input)?;
+    let (input, interfaces) = count(be_u16, interface_count as _).parse(input)?;
 
     Ok((input, interfaces))
 }
 
 fn parse_fields(input: &[u8]) -> IResult<&[u8], Vec<FieldInfo>> {
     let (input, field_count) = be_u16(input)?;
-    let (input, fields) = count(parse_field, field_count as _)(input)?;
+    let (input, fields) = count(parse_field, field_count as _).parse(input)?;
     Ok((input, fields))
 }
 
@@ -233,8 +232,7 @@ fn parse_field(input: &[u8]) -> IResult<&[u8], FieldInfo> {
     Ok((
         input,
         FieldInfo {
-            // SAFETY: allow extra bits
-            access_flags: unsafe { FieldAccessFlag::from_bits_unchecked(access_flags) },
+            access_flags: FieldAccessFlag::from_bits_retain(access_flags),
             name_index,
             descriptor_index,
             attributes,
@@ -245,7 +243,7 @@ fn parse_field(input: &[u8]) -> IResult<&[u8], FieldInfo> {
 fn parse_attributes(input: &[u8]) -> IResult<&[u8], Vec<AttributeInfo>> {
     let (input, attributes_count) = be_u16(input)?;
 
-    let (input, attributes) = count(parse_attribute, attributes_count as _)(input)?;
+    let (input, attributes) = count(parse_attribute, attributes_count as _).parse(input)?;
 
     Ok((input, attributes))
 }
@@ -267,7 +265,7 @@ fn parse_attribute(input: &[u8]) -> IResult<&[u8], AttributeInfo> {
 fn parse_methods(input: &[u8]) -> IResult<&[u8], Vec<MethodInfo>> {
     let (input, methods_count) = be_u16(input)?;
 
-    let (input, methods) = count(parse_method, methods_count as _)(input)?;
+    let (input, methods) = count(parse_method, methods_count as _).parse(input)?;
 
     Ok((input, methods))
 }
@@ -281,8 +279,7 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], MethodInfo> {
     Ok((
         input,
         MethodInfo {
-            // SAFETY: allow extra bits
-            access_flags: unsafe { MethodAccessFlag::from_bits_unchecked(access_flags) },
+            access_flags: MethodAccessFlag::from_bits_retain(access_flags),
             name_index,
             descriptor_index,
             attributes,

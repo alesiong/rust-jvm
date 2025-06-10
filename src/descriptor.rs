@@ -1,11 +1,11 @@
 use nom::{
-    branch::alt,
-    bytes::complete::take_until,
+    branch::alt, bytes::complete::take_until,
     character::complete::{char, one_of},
     combinator::{eof, map},
     multi::many0,
     sequence::delimited,
     IResult,
+    Parser,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,7 +46,8 @@ pub fn parse_field_descriptor(input: &str) -> IResult<&str, FieldDescriptor> {
 }
 
 pub fn parse_method_descriptor(input: &str) -> IResult<&str, MethodDescriptor> {
-    let (input, parameters) = delimited(char('('), many0(parse_field_type), char(')'))(input)?;
+    let (input, parameters) =
+        delimited(char('('), many0(parse_field_type), char(')')).parse(input)?;
 
     let (input, return_type) = parse_return_type_descriptor(input)?;
 
@@ -61,11 +62,11 @@ pub fn parse_method_descriptor(input: &str) -> IResult<&str, MethodDescriptor> {
 }
 
 pub fn parse_return_type_descriptor(input: &str) -> IResult<&str, ReturnType> {
-    alt((map(parse_field_type, Some), parse_void_type))(input)
+    alt((map(parse_field_type, Some), parse_void_type)).parse(input)
 }
 
 fn parse_field_type(input: &str) -> IResult<&str, FieldType> {
-    alt((parse_base_type, parse_object_type, parse_array_type))(input)
+    alt((parse_base_type, parse_object_type, parse_array_type)).parse(input)
 }
 
 fn parse_base_type(input: &str) -> IResult<&str, FieldType> {

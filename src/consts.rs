@@ -1,4 +1,6 @@
 bitflags::bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ClassAccessFlag: u16 {
         const PUBLIC = 0x0001;
         const FINAL = 0x0010;
@@ -10,7 +12,9 @@ bitflags::bitflags! {
         const ENUM = 0x4000;
         const MODULE = 0x8000;
     }
-
+    
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct FieldAccessFlag: u16 {
         const PUBLIC = 0x0001;
         const PRIVATE = 0x0002;
@@ -22,6 +26,9 @@ bitflags::bitflags! {
         const SYNTHETIC = 0x1000;
         const ENUM = 0x4000;
     }
+    
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct MethodAccessFlag: u16 {
         const PUBLIC = 0x0001;
         const PRIVATE = 0x0002;

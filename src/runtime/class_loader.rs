@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::convert::identity;
 use std::sync::{Arc, RwLock};
 
-use nom::bytes::complete::take;
-use nom::multi::count;
-use nom::number::complete::{be_u16, be_u32, u8};
-use nom::{IResult, Slice, error_position};
+use nom::{
+    IResult, Parser,
+    bytes::complete::take,
+    error_position,
+    multi::count,
+    number::complete::{be_u16, be_u32, u8},
+};
 
 use crate::runtime::{MethodInfo, Module, ModuleExport};
 use crate::{
@@ -373,7 +376,7 @@ fn parse_attribute<'a>(
             let (num_annotations, annotations);
             (input, num_annotations) = be_u16(input)?;
             (input, annotations) =
-                count(parse_annotation(constant_pool), num_annotations as _)(input)?;
+                count(parse_annotation(constant_pool), num_annotations as _).parse(input)?;
 
             runtime::AttributeInfo::RuntimeVisibleAnnotations(annotations)
         }
@@ -383,7 +386,8 @@ fn parse_attribute<'a>(
             (input, local_variable_table) = count(
                 parse_local_variable(constant_pool),
                 local_variable_table_length as _,
-            )(input)?;
+            )
+            .parse(input)?;
 
             runtime::AttributeInfo::LocalVariableTable(local_variable_table)
         }
@@ -418,7 +422,8 @@ fn parse_attribute<'a>(
                     ))
                 },
                 line_number_table_length as _,
-            )(input)?;
+            )
+            .parse(input)?;
             runtime::AttributeInfo::LineNumberTable(line_number_table)
         }
         "Module" => {
@@ -437,7 +442,8 @@ fn parse_attribute<'a>(
                     Ok((input, ()))
                 },
                 requires_count as _,
-            )(input)?;
+            )
+            .parse(input)?;
 
             let (exports_count, exports);
             (input, exports_count) = be_u16(input)?;
@@ -446,7 +452,8 @@ fn parse_attribute<'a>(
                     let (input, exports_index) = be_u16(input)?;
                     let (input, exports_flags) = be_u16(input)?;
                     let (input, exports_to_count) = be_u16(input)?;
-                    let (input, exports_to_index) = count(be_u16, exports_to_count as _)(input)?;
+                    let (input, exports_to_index) =
+                        count(be_u16, exports_to_count as _).parse(input)?;
 
                     Ok((
                         input,
@@ -461,7 +468,8 @@ fn parse_attribute<'a>(
                     ))
                 },
                 exports_count as _,
-            )(input)?;
+            )
+            .parse(input)?;
 
             let (opens_count, opens);
             (input, opens_count) = be_u16(input)?;
@@ -470,15 +478,17 @@ fn parse_attribute<'a>(
                     let (input, opens_index) = be_u16(input)?;
                     let (input, opens_flags) = be_u16(input)?;
                     let (input, opens_to_count) = be_u16(input)?;
-                    let (input, opens_to_index) = count(be_u16, opens_to_count as _)(input)?;
+                    let (input, opens_to_index) =
+                        count(be_u16, opens_to_count as _).parse(input)?;
                     Ok((input, ()))
                 },
                 opens_count as _,
-            )(input)?;
+            )
+            .parse(input)?;
 
             let (uses_count, uses_index);
             (input, uses_count) = be_u16(input)?;
-            (input, uses_index) = count(be_u16, uses_count as _)(input)?;
+            (input, uses_index) = count(be_u16, uses_count as _).parse(input)?;
 
             let (provides_count, provides);
             (input, provides_count) = be_u16(input)?;
@@ -487,11 +497,12 @@ fn parse_attribute<'a>(
                     let (input, provides_index) = be_u16(input)?;
                     let (input, provides_with_count) = be_u16(input)?;
                     let (input, provides_with_index) =
-                        count(be_u16, provides_with_count as _)(input)?;
+                        count(be_u16, provides_with_count as _).parse(input)?;
                     Ok((input, ()))
                 },
                 provides_count as _,
-            )(input)?;
+            )
+            .parse(input)?;
             runtime::AttributeInfo::Module(Module {
                 // TODO:
                 exports,
@@ -500,7 +511,7 @@ fn parse_attribute<'a>(
         "ModulePackages" => {
             let (package_count, package_index);
             (input, package_count) = be_u16(input)?;
-            (input, package_index) = count(be_u16, package_count as _)(input)?;
+            (input, package_index) = count(be_u16, package_count as _).parse(input)?;
 
             let packages = package_index
                 .iter()
@@ -560,10 +571,10 @@ fn parse_attribute_raw(
         let (input, attribute_length) = be_u32(input)?;
         let (_, attribute) = parse_attribute(
             attribute_name_index,
-            input.slice(..attribute_length as _),
+            &input[..attribute_length as _],
             constant_pool,
         )?;
-        Ok((input.slice((attribute_length as _)..), attribute))
+        Ok((&input[(attribute_length as _)..], attribute))
     }
 }
 
@@ -574,7 +585,7 @@ fn parse_attributes<'a>(
     let (input, attributes_count) = be_u16(input)?;
 
     let (input, attributes) =
-        count(parse_attribute_raw(constant_pool), attributes_count as _)(input)?;
+        count(parse_attribute_raw(constant_pool), attributes_count as _).parse(input)?;
 
     Ok((input, attributes))
 }
@@ -594,7 +605,8 @@ fn parse_code_attribute<'a>(
     let (input, exception_table) = count(
         parse_exception_table(constant_pool),
         exception_table_length as _,
-    )(input)?;
+    )
+    .parse(input)?;
 
     let (input, attributes) = parse_attributes(input, constant_pool)?;
 
@@ -647,7 +659,8 @@ fn parse_annotation(
         let (input, element_value_pairs) = count(
             parse_element_value_pair(constant_pool),
             num_element_value_pairs as _,
-        )(input)?;
+        )
+        .parse(input)?;
 
         Ok((
             input,
@@ -725,7 +738,7 @@ fn parse_element_value(
                 let (num_values, values);
                 (input, num_values) = be_u16(input)?;
                 (input, values) =
-                    count(parse_element_value(constant_pool), num_values as _)(input)?;
+                    count(parse_element_value(constant_pool), num_values as _).parse(input)?;
                 ElementValue::Array(values)
             }
             _ => {
