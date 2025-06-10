@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use crate::class::structs::java_str::JavaStr;
 
 #[derive(Debug)]
 pub enum ConstantPoolInfo {
-    Utf8(Arc<str>),
+    Utf8(Arc<JavaStr>),
     Integer(i32),
     Float(f32),
     Long(i64),

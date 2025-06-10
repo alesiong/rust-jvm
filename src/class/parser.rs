@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use crate::{
-    class::{AttributeInfo, Class, ConstantPoolInfo, FieldInfo, MethodInfo},
+    class::{AttributeInfo, Class, ConstantPoolInfo, FieldInfo, MethodInfo, structs::JavaStr},
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
 };
 use nom::{
@@ -12,6 +10,7 @@ use nom::{
     multi::count,
     number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u32, u8},
 };
+use std::sync::Arc;
 
 pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
     let (input, (minor, major)) = parse_header(input)?;
@@ -84,8 +83,8 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
             let bytes;
             (input, bytes) = take(length)(input)?;
             ConstantPoolInfo::Utf8(
-                // TODO: unwrap
-                Arc::from(cesu8::from_java_cesu8(bytes).unwrap()),
+                // SAFETY: from JVM class file
+                unsafe { JavaStr::new(bytes) }.into(),
             )
         }
         3 => {

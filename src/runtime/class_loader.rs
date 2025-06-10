@@ -27,6 +27,7 @@ use crate::{
 use super::{ElementValue, LocalVariable};
 
 mod bootstrap;
+use crate::class::JavaStr;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
@@ -111,7 +112,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::Long(v) => Cpi::Long(*v),
             class::ConstantPoolInfo::Double(v) => Cpi::Double(*v),
             class::ConstantPoolInfo::Class { name_index } => Cpi::Class(CpClassInfo {
-                name: resolve_cp_utf8(cp, *name_index),
+                name: resolve_cp_utf8(cp, *name_index).to_str().into(),
                 class: RwLock::new(None),
             }),
             class::ConstantPoolInfo::String { string_index } => {
@@ -164,7 +165,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
 
 fn parse_field(cp: &[class::ConstantPoolInfo], field: &class::FieldInfo) -> runtime::FieldInfo {
     let descriptor = resolve_cp_utf8(cp, field.descriptor_index);
-    let (_, descriptor) = parse_field_descriptor(&descriptor).unwrap();
+    let (_, descriptor) = parse_field_descriptor(&descriptor.to_str()).unwrap();
     runtime::FieldInfo {
         access_flags: field.access_flags,
         name: resolve_cp_utf8(cp, field.name_index),
@@ -175,7 +176,7 @@ fn parse_field(cp: &[class::ConstantPoolInfo], field: &class::FieldInfo) -> runt
 
 fn parse_method(cp: &[class::ConstantPoolInfo], method: &class::MethodInfo) -> runtime::MethodInfo {
     let descriptor = resolve_cp_utf8(cp, method.descriptor_index);
-    let (_, descriptor) = parse_method_descriptor(&descriptor).unwrap();
+    let (_, descriptor) = parse_method_descriptor(&descriptor.to_str()).unwrap();
     runtime::MethodInfo {
         access_flags: method.access_flags,
         name: resolve_cp_utf8(cp, method.name_index),
@@ -204,7 +205,7 @@ fn resolve_this_class_field_ref(
     cp: &mut [runtime::ConstantPoolInfo],
     class_name: &str,
 ) -> (usize, usize) {
-    let mut field_map: HashMap<(&str, &FieldDescriptor), FieldIndex> = HashMap::new();
+    let mut field_map: HashMap<(&JavaStr, &FieldDescriptor), FieldIndex> = HashMap::new();
     let mut static_size = 0;
     let mut instance_size = 0;
     for field in fields {
@@ -243,21 +244,21 @@ fn resolve_this_class_field_ref(
     (instance_size as usize, static_size as usize)
 }
 
-fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<str> {
+fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
     let class::ConstantPoolInfo::Utf8(string) = &constant_pool[index as usize - 1] else {
         panic!("cannot find string {}", index);
     };
     Arc::clone(string)
 }
 
-fn resolve_cp_package(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<str> {
+fn resolve_cp_package(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
     let class::ConstantPoolInfo::Package { name_index } = &constant_pool[index as usize - 1] else {
         panic!("cannot find package {}", index);
     };
     resolve_cp_utf8(constant_pool, *name_index)
 }
 
-fn resolve_cp_module(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<str> {
+fn resolve_cp_module(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
     let class::ConstantPoolInfo::Module { name_index } = &constant_pool[index as usize - 1] else {
         panic!("cannot find module {}", index);
     };
@@ -270,7 +271,7 @@ fn resolve_cp_class(constant_pool: &[class::ConstantPoolInfo], class_index: u16)
         panic!("cannot find class {}", class_index);
     };
     CpClassInfo {
-        name: resolve_cp_utf8(constant_pool, *name_index),
+        name: resolve_cp_utf8(constant_pool, *name_index).to_str().into(),
         class: RwLock::new(None),
     }
 }
@@ -292,7 +293,7 @@ fn resolve_cp_name_and_type_field(
 
     // TODO: unwrap
     let (_, descriptor) =
-        descriptor::parse_field_descriptor(&descriptor).expect("invalid descriptor");
+        descriptor::parse_field_descriptor(&descriptor.to_str()).expect("invalid descriptor");
 
     CpNameAndTypeInfo::<FieldDescriptor> {
         name: Arc::clone(&name),
@@ -317,7 +318,7 @@ fn resolve_cp_name_and_type_method(
 
     // TODO: unwrap
     let (_, descriptor) =
-        descriptor::parse_method_descriptor(&descriptor).expect("invalid descriptor");
+        descriptor::parse_method_descriptor(&descriptor.to_str()).expect("invalid descriptor");
 
     CpNameAndTypeInfo::<MethodDescriptor> {
         name: Arc::clone(&name),
@@ -329,10 +330,10 @@ fn resolve_cp_name_and_type(
     constant_pool: &[class::ConstantPoolInfo],
     name_index: u16,
     descriptor_index: u16,
-) -> CpNameAndTypeInfo<Arc<str>> {
+) -> CpNameAndTypeInfo<Arc<JavaStr>> {
     let name = resolve_cp_utf8(constant_pool, name_index);
     let descriptor = resolve_cp_utf8(constant_pool, descriptor_index);
-    CpNameAndTypeInfo::<Arc<str>> { name, descriptor }
+    CpNameAndTypeInfo::<Arc<JavaStr>> { name, descriptor }
 }
 
 fn resolve_constant_value(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Const {
@@ -356,9 +357,10 @@ fn parse_attribute<'a>(
     mut input: &'a [u8],
     constant_pool: &[class::ConstantPoolInfo],
 ) -> IResult<&'a [u8], runtime::AttributeInfo> {
+    // TODO: move this to parser
     let attribute_name = resolve_cp_utf8(constant_pool, attribute_name_index);
 
-    let attribute_info = match attribute_name.as_ref() {
+    let attribute_info = match attribute_name.to_str().as_ref() {
         "Code" => {
             let attribute_info;
             (input, attribute_info) = parse_code_attribute(input, constant_pool)?;
@@ -666,7 +668,7 @@ fn parse_annotation(
             input,
             Annotation {
                 // TODO: unwrap
-                type_descriptor: parse_field_descriptor(&type_str).unwrap().1,
+                type_descriptor: parse_field_descriptor(&type_str.to_str()).unwrap().1,
                 element_value_pairs,
             },
         ))
@@ -725,7 +727,9 @@ fn parse_element_value(
                 (input, class_info_index) = be_u16(input)?;
                 let class_info = resolve_cp_utf8(constant_pool, class_info_index);
                 // TODO: unwrap
-                let class = parse_return_type_descriptor(&class_info).unwrap().1;
+                let class = parse_return_type_descriptor(&class_info.to_str())
+                    .unwrap()
+                    .1;
 
                 ElementValue::Class(class)
             }
@@ -773,7 +777,7 @@ fn parse_local_variable(
         let (input, descriptor_index) = be_u16(input)?;
         let descriptor = resolve_cp_utf8(constant_pool, descriptor_index);
         // TODO: unwrap
-        let (_, descriptor) = parse_field_descriptor(&descriptor).unwrap();
+        let (_, descriptor) = parse_field_descriptor(&descriptor.to_str()).unwrap();
         let (input, index) = be_u16(input)?;
 
         Ok((

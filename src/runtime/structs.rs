@@ -8,6 +8,7 @@ use crate::{
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
     descriptor::{FieldDescriptor, FieldType, MethodDescriptor},
 };
+use crate::class::JavaStr;
 use crate::runtime::Variable;
 
 mod attributes;
@@ -31,7 +32,7 @@ pub struct Class {
 impl Class {
     pub(super) fn resolve_method(
         &self,
-        name: &str,
+        name: &JavaStr,
         param_descriptor: &[FieldType],
     ) -> Option<&MethodInfo> {
         for method_info in &self.methods {
@@ -53,7 +54,7 @@ impl Class {
 #[derive(Debug)]
 pub struct FieldInfo {
     pub(crate) access_flags: FieldAccessFlag,
-    pub(crate) name: Arc<str>,
+    pub(crate) name: Arc<JavaStr>,
     pub(crate) descriptor: FieldDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
 }
@@ -61,7 +62,7 @@ pub struct FieldInfo {
 #[derive(Debug)]
 pub struct MethodInfo {
     pub(crate) access_flags: MethodAccessFlag,
-    pub(crate) name: Arc<str>,
+    pub(crate) name: Arc<JavaStr>,
     pub(crate) descriptor: MethodDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
 }

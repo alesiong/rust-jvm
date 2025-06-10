@@ -67,12 +67,12 @@ impl BootstrapClassLoader {
         };
         if need_init {
             // execute clinit
-            if let Some(clinit) = class.methods.iter().find(|m| m.name.as_ref() == "<clinit>") {
+            if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
                 println!("clinit found for {:?}", clinit);
                 let mut init_thread = runtime::Thread::new(1024);
                 init_thread.new_frame(
                     Arc::clone(&class),
-                    &clinit.name,
+                    &clinit.name.to_str(),
                     &clinit.descriptor.parameters,
                     0,
                 );
@@ -97,14 +97,7 @@ fn load_class(
     let module_id = package_to_module.get(package).unwrap();
     let module = &modules[*module_id];
 
-    runtime::parse_class(&module.get_class_file(name))
-}
-
-fn parse_class(path: &Path) -> runtime::Class {
-    // TODO: unwrap
-    let file = fs::read(path).unwrap();
-    let (_, cls) = parser::class_file(&file).unwrap();
-    runtime::parse_class(&cls)
+    runtime::parse_class(&module.get_class_file(&(name.to_string() + ".class")))
 }
 
 #[derive(Debug)]
@@ -172,7 +165,7 @@ impl ModuleLoader for JModModule {
             .attributes
             .iter()
             .filter_map(|attr| match attr {
-                AttributeInfo::ModulePackages(pkg) => Some(pkg.iter().map(Arc::clone)),
+                AttributeInfo::ModulePackages(pkg) => Some(pkg.iter().map(|s| s.to_str().into())),
                 _ => None,
             })
             .flatten()
@@ -232,7 +225,7 @@ impl ModuleLoader for ClassPathModule {
         }
         traverse(&self.base_path, &mut packages);
 
-        packages.into_iter().map(Arc::from).collect()
+        packages.into_iter().map(Into::into).collect()
     }
 
     fn name(&self) -> &str {

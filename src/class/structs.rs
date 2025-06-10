@@ -3,10 +3,15 @@
 use std::sync::Arc;
 
 mod constant_pool;
+mod java_str;
 
 pub use constant_pool::*;
+pub use java_str::*;
 
-use crate::{descriptor::{FieldDescriptor, MethodDescriptor}, consts::{FieldAccessFlag, MethodAccessFlag, ClassAccessFlag}};
+use crate::{
+    consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
+    descriptor::{FieldDescriptor, MethodDescriptor},
+};
 
 #[derive(Debug)]
 pub struct Class {

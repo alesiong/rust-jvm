@@ -1,11 +1,12 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use super::{instructions, Next};
+use super::{Next, instructions};
+use crate::class::JavaStr;
 use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
-use crate::runtime::interpreter::{global, InterpreterEnv};
 use crate::runtime::CodeAttribute;
+use crate::runtime::interpreter::{InterpreterEnv, global};
 use crate::{descriptor::FieldType, runtime};
 
 pub struct Thread {
@@ -101,6 +102,7 @@ impl Thread {
     pub fn new_frame(
         &mut self,
         class: Arc<runtime::Class>,
+        // TODO: change to JavaStr
         method_name: &str,
         param_descriptor: &[FieldType],
         return_address: usize,
@@ -123,7 +125,9 @@ impl Thread {
         return_address: usize,
         need_this: bool,
     ) {
-        let Some(method_info) = class.resolve_method(method_name, param_descriptor) else {
+        let Some(method_info) =
+            class.resolve_method(&JavaStr::from_str(method_name), param_descriptor)
+        else {
             panic!("method not found: {}", method_name);
         };
 
@@ -257,7 +261,7 @@ impl Thread {
                     Self::new_frame_inner(
                         &mut self.top_frame,
                         class,
-                        &name_and_type.name,
+                        &name_and_type.name.to_str(),
                         &name_and_type.descriptor.parameters,
                         *mut_pc + 1,
                         true,
@@ -273,7 +277,7 @@ impl Thread {
                     Self::new_frame_inner(
                         &mut self.top_frame,
                         class,
-                        &name_and_type.name,
+                        &name_and_type.name.to_str(),
                         &name_and_type.descriptor.parameters,
                         *mut_pc + 1,
                         false,

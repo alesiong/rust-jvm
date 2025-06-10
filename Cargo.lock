@@ -86,10 +86,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "cesu8"
-version = "1.1.0"
+name = "cesu8-str"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
+checksum = "6fd9eb12df770eb7a2bf086b3e629ad0e1cd8c7d415cf180e94e408e75fba27a"
 
 [[package]]
 name = "cfg-if"
@@ -304,7 +304,7 @@ name = "jvm"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "cesu8",
+ "cesu8-str",
  "dashmap",
  "nom",
  "paste",

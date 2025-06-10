@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 
+use crate::class::JavaStr;
 use crate::{
     descriptor::{FieldDescriptor, MethodDescriptor},
     runtime::Class,
@@ -7,13 +8,13 @@ use crate::{
 
 #[derive(Debug)]
 pub enum ConstantPoolInfo {
-    Utf8(Arc<str>),
+    Utf8(Arc<JavaStr>),
     Integer(i32),
     Float(f32),
     Long(i64),
     Double(f64),
     Class(CpClassInfo),
-    String(Arc<str>),
+    String(Arc<JavaStr>),
     Fieldref {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<FieldDescriptor>,
@@ -27,13 +28,13 @@ pub enum ConstantPoolInfo {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
-    NameAndType(CpNameAndTypeInfo<Arc<str>>),
+    NameAndType(CpNameAndTypeInfo<Arc<JavaStr>>),
     MethodHandle,
     MethodType,
     Dynamic,
     InvokeDynamic,
-    Module(Arc<str>),
-    Package(Arc<str>),
+    Module(Arc<JavaStr>),
+    Package(Arc<JavaStr>),
     Empty,
 }
 
@@ -55,7 +56,7 @@ impl Clone for CpClassInfo {
 
 #[derive(Debug, Clone)]
 pub struct CpNameAndTypeInfo<T> {
-    pub(crate) name: Arc<str>,
+    pub(crate) name: Arc<JavaStr>,
     pub(crate) descriptor: T,
 }
 
