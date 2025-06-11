@@ -1,15 +1,15 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Once, RwLock};
 
 pub use attributes::*;
 pub use constant_pool::*;
 pub use object::*;
 
+use crate::class::JavaStr;
+use crate::runtime::Variable;
 use crate::{
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
     descriptor::{FieldDescriptor, FieldType, MethodDescriptor},
 };
-use crate::class::JavaStr;
-use crate::runtime::Variable;
 
 mod attributes;
 mod constant_pool;
@@ -27,6 +27,7 @@ pub struct Class {
     pub(crate) attributes: Vec<AttributeInfo>,
     pub(crate) field_var_size: usize,
     pub(crate) static_fields: RwLock<Vec<Variable>>,
+    pub(crate) clinit_call: Once,
 }
 
 impl Class {

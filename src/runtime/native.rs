@@ -37,14 +37,6 @@ pub fn register_natives() {
         ),
         native_object_hash_code,
     );
-    NATIVE_FUNCTIONS.insert(
-        (
-            "java/lang/Object".to_string(),
-            "registerNatives".to_string(),
-            vec![],
-        ),
-        native_nop,
-    );
 }
 
 fn native_object_hash_code(env: NativeEnv) -> Option<NativeVariable> {

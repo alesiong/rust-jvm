@@ -17,6 +17,9 @@ pub enum AttributeInfo {
     Exceptions,
     Module(Module),
     ModulePackages(Vec<Arc<JavaStr>>),
+    ModuleHashes,
+    ModuleTarget(Arc<JavaStr>),
+    InnerClasses,
     Unknown(Arc<JavaStr>),
 }
 

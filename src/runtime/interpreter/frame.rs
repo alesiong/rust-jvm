@@ -6,6 +6,7 @@ use crate::class::JavaStr;
 use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
 use crate::runtime::CodeAttribute;
+use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::interpreter::{InterpreterEnv, global};
 use crate::{descriptor::FieldType, runtime};
 
@@ -98,6 +99,17 @@ impl Thread {
             max_frame_size,
             pc: 0,
         }
+    }
+
+    pub fn new_main_frame(
+        &mut self,
+        main_class: &str,
+        method_name: &str,
+        param_descriptor: &[FieldType],
+    ) {
+        let loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let main_class = loader.resolve_class(main_class);
+        self.new_frame(main_class, method_name, param_descriptor, 0);
     }
     pub fn new_frame(
         &mut self,

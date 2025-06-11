@@ -5,9 +5,9 @@ mod instructions;
 use super::{Class, CpClassInfo, CpNameAndTypeInfo, NativeEnv, NativeVariable};
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
+use crate::runtime::Heap;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::native::NATIVE_FUNCTIONS;
-use crate::runtime::Heap;
 use crate::runtime::{self};
 pub use frame::*;
 use std::cmp::Ordering;
@@ -724,7 +724,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    let class_to_invoke = self.resolve_class(&class.name, &class.class);
+                    let class_to_invoke = self.resolve_class(&class);
                     return Next::InvokeSpecial {
                         class: class_to_invoke,
                         name_and_type: name_and_type.clone(),
@@ -739,7 +739,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    let class_to_invoke = self.resolve_class(&class.name, &class.class);
+                    let class_to_invoke = self.resolve_class(&class);
 
                     return Next::InvokeStatic {
                         class: class_to_invoke,
@@ -908,12 +908,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn new_object(&mut self) {
         let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Class(CpClassInfo { name, class }) =
-            self.frame.class.get_constant(cp_index)
+        let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {}", cp_index);
         };
-        let new_class = self.resolve_class(name, class);
+        let new_class = self.resolve_class(cp_info);
 
         let mut fields_types = Vec::new();
 
@@ -1177,24 +1176,12 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
-    fn resolve_class(&self, name: &Arc<str>, class: &RwLock<Option<Arc<Class>>>) -> Arc<Class> {
-        let class_read = class.read().unwrap();
-        let new_class;
-        if name == &self.frame.class.class_name {
-            new_class = Arc::clone(&self.frame.class);
-        } else if let Some(cls) = &*class_read {
-            new_class = Arc::clone(cls);
+    fn resolve_class(&self, class: &CpClassInfo) -> Arc<Class> {
+        if &class.name == &self.frame.class.class_name {
+            Arc::clone(&self.frame.class)
         } else {
-            drop(class_read);
-            let mut class_write = class.write().unwrap();
-            if let Some(cls) = &*class_write {
-                new_class = Arc::clone(cls);
-            } else {
-                let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-                new_class = bootstrap_class_loader.resolve_class(name);
-                class_write.replace(Arc::clone(&new_class));
-            }
+            let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+            class.get_or_load_class(|| bootstrap_class_loader.resolve_class(&class.name))
         }
-        new_class
     }
 }

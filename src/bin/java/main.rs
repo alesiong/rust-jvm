@@ -8,39 +8,27 @@ use jvm::{
 };
 
 fn main() {
-
     init_bootstrap_class_loader(vec![
         Box::new(JModModule::new(
             "/opt/homebrew/Cellar/openjdk@17/17.0.15/libexec/openjdk.jdk/Contents/Home/",
             "java.base",
         )),
-        Box::new(ClassPathModule::new("main", "data/")),
+        Box::new(ClassPathModule::new("main", "data/main")),
     ]);
-    
+
     register_natives();
 
-    let mut class_file = Vec::new();
-    File::open("data/Add.class")
-        // File::open("data/rt/java.base/java/lang/Object.class")
-        .unwrap()
-        .read_to_end(&mut class_file)
-        .unwrap();
-
-    let (_, cls) = parser::class_file(&class_file).unwrap();
-    let class = parse_class(&cls);
-    // println!("{:#?}", class);
-
+    // TODO: load main class
     let mut main_thread = runtime::Thread::new(1024);
-    main_thread.new_frame(
-        Arc::new(class),
+    main_thread.new_main_frame(
+        "Add",
         "main",
         &[descriptor::FieldType::Array(Box::new(
             descriptor::FieldType::Object("java/lang/String".to_string()),
         ))],
-        0,
     );
 
-    let frame = main_thread.top_frame().unwrap();
+    // let frame = main_thread.top_frame().unwrap();
 
     // frame.add_local_int(10);
     // frame.add_local_int(20);

@@ -1,6 +1,7 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, OnceState, RwLock};
 
 use crate::class::JavaStr;
+use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::{
     descriptor::{FieldDescriptor, MethodDescriptor},
     runtime::Class,
@@ -41,8 +42,18 @@ pub enum ConstantPoolInfo {
 #[derive(Debug)]
 pub struct CpClassInfo {
     pub(crate) name: Arc<str>,
-    // TODO: array, oncecell
-    pub(crate) class: RwLock<Option<Arc<Class>>>,
+    // TODO: array
+    pub(crate) class: Arc<OnceLock<Arc<Class>>>,
+}
+
+impl CpClassInfo {
+    pub(crate) fn set_class(&self, class: &Arc<Class>) {
+        self.class.set(Arc::clone(class)).unwrap();
+    }
+
+    pub(crate) fn get_or_load_class(&self, resolver: impl FnOnce() -> Arc<Class>) -> Arc<Class> {
+        Arc::clone(self.class.get_or_init(resolver))
+    }
 }
 
 impl Clone for CpClassInfo {

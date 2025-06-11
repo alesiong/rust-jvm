@@ -7,9 +7,12 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
 };
 use zip::{ZipArchive, read::ZipFile};
 
+use crate::runtime::class_loader::resolve_cp_class;
+use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::{
     class::{self, parser},
     runtime,
@@ -54,18 +57,15 @@ impl BootstrapClassLoader {
         let class = match self.class_registry.entry(class_name.to_string()) {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {
-                let class = Arc::new(load_class(
-                    &self.package_to_module,
-                    &self.modules,
-                    class_name,
-                ));
+                let class = Arc::new(self.load_class(class_name));
                 println!("loaded {}", class_name);
                 entry.insert(Arc::clone(&class));
                 need_init = true;
                 class
             }
         };
-        if need_init {
+        // TODO: reentry
+        class.clinit_call.call_once(|| {
             // execute clinit
             if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
                 println!("clinit found for {:?}", clinit);
@@ -78,32 +78,51 @@ impl BootstrapClassLoader {
                 );
                 init_thread.execute();
             }
-        }
+        });
         class
     }
-}
 
-fn load_class(
-    package_to_module: &HashMap<String, usize>,
-    modules: &[Box<dyn ModuleLoader + Send + Sync + 'static>],
-    name: &str,
-) -> runtime::Class {
-    let package = if let Some((pkg, _)) = name.rsplit_once('/') {
-        pkg
-    } else {
-        ""
-    };
-    // TODO: unwrap
-    let module_id = package_to_module.get(package).unwrap();
-    let module = &modules[*module_id];
+    fn load_class(&self, name: &str) -> runtime::Class {
+        let package = if let Some((pkg, _)) = name.rsplit_once('/') {
+            pkg
+        } else {
+            ""
+        };
+        // TODO: unwrap
+        let module_id = self.package_to_module.get(package).unwrap();
+        let module = &self.modules[*module_id];
 
-    runtime::parse_class(&module.get_class_file(&(name.to_string() + ".class")))
+        let class_file = &module.get_class_file(&(name.to_string() + ".class"));
+        let mut class = runtime::parse_class(class_file);
+        self.load_super_class(&mut class, class_file.super_class);
+        self.load_interfaces(&mut class, &class_file.interfaces);
+        class
+    }
+
+    fn load_super_class(&self, class: &mut runtime::Class, class_index: u16) {
+        // java.lang.Object
+        if class_index == 0 {
+            return;
+        }
+        let super_class = resolve_cp_class(&class.constant_pool, class_index);
+        let loaded = self.resolve_class(&super_class.name);
+        super_class.set_class(&loaded);
+        class.super_class.replace(loaded);
+    }
+    fn load_interfaces(&self, class: &mut runtime::Class, interfaces: &[u16]) {
+        for index in interfaces {
+            let interface = resolve_cp_class(&class.constant_pool, *index);
+            let loaded = self.resolve_class(&interface.name);
+            interface.set_class(&loaded);
+            class.interfaces.push(loaded);
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct JModModule {
     name: String,
-    class_files: HashMap<String, class::Class>,
+    class_files: HashMap<String, Vec<u8>>,
     module_info: runtime::Class,
 }
 
@@ -140,7 +159,6 @@ impl JModModule {
             }
             let name = file.name().replace("classes/", "");
             let class_file = Self::get_class_bytes(&mut file);
-            let (_, class_file) = parser::class_file(&class_file).expect(&name);
             class_files.insert(name, class_file);
         }
 
@@ -177,7 +195,10 @@ impl ModuleLoader for JModModule {
     }
 
     fn get_class_file(&self, class_name: &str) -> OwnedOrRef<class::Class> {
-        self.class_files.get(class_name).unwrap().into()
+        let class_file = &self.class_files[class_name];
+        let (_, class_file) = parser::class_file(&class_file).expect(&class_name);
+
+        class_file.into()
     }
 }
 
@@ -200,7 +221,7 @@ impl ModuleLoader for ClassPathModule {
     fn packages(&self) -> Vec<Arc<str>> {
         // TODO: unwrap
         let mut packages = HashSet::new();
-        fn traverse(path: &Path, packages: &mut HashSet<String>) {
+        fn traverse(path: &Path, packages: &mut HashSet<String>, base_path: &Path) {
             if !path.is_dir() {
                 return;
             }
@@ -208,7 +229,7 @@ impl ModuleLoader for ClassPathModule {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 if path.is_dir() {
-                    traverse(&path, packages);
+                    traverse(&path, packages, base_path);
                 } else if path.is_file() {
                     if let Some(ext) = path.extension() {
                         if ext == "class" {
@@ -217,13 +238,18 @@ impl ModuleLoader for ClassPathModule {
                                 .and_then(Path::to_str)
                                 .unwrap_or("")
                                 .to_string();
-                            packages.insert(dir_name);
+                            packages.insert(
+                                dir_name
+                                    .strip_prefix(base_path.to_str().expect("must be utf-8"))
+                                    .expect("must have base path as prefix")
+                                    .to_string(),
+                            );
                         }
                     }
                 }
             }
         }
-        traverse(&self.base_path, &mut packages);
+        traverse(&self.base_path, &mut packages, &self.base_path);
 
         packages.into_iter().map(Into::into).collect()
     }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::convert::identity;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Once, RwLock};
 
 use nom::{
     IResult, Parser,
@@ -35,74 +35,58 @@ pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 pub fn parse_class(class_file: &class::Class) -> runtime::Class {
     let mut constant_pool = parse_constant_pool(&class_file.constant_pool);
 
-    // TODO: super_class should be provided by class loader
-    let super_class = load_super_class(&class_file.constant_pool, class_file.super_class);
-    let interfaces = load_interfaces(&class_file.constant_pool, &class_file.interfaces);
     let fields: Vec<_> = class_file
         .fields
         .iter()
-        .map(|f| parse_field(&class_file.constant_pool, f))
+        .map(|f| parse_field(&constant_pool, f))
         .collect();
     let methods: Vec<MethodInfo> = class_file
         .methods
         .iter()
-        .map(|m| parse_method(&class_file.constant_pool, m))
+        .map(|m| parse_method(&constant_pool, m))
         .collect();
     let attributes = class_file
         .attributes
         .iter()
-        .map(convert_attribute(&class_file.constant_pool))
+        .map(convert_attribute(&constant_pool))
         .collect();
 
-    let class_name = resolve_cp_class(&class_file.constant_pool, class_file.this_class).name;
+    let class_name = Arc::clone(&resolve_cp_class(&constant_pool, class_file.this_class).name);
+
+    // TODO: resolve in class loader
     let (field_var_size, static_field_size) =
         resolve_this_class_field_ref(&fields, &mut constant_pool, &class_name);
 
     runtime::Class {
         access_flags: class_file.access_flags,
         class_name: Arc::clone(&class_name),
-        super_class,
-        interfaces,
+        super_class: None,
+        interfaces: Vec::with_capacity(class_file.interfaces.len()),
         fields,
         methods,
         attributes,
         constant_pool,
         field_var_size,
         static_fields: RwLock::new(vec![]),
+        clinit_call: Once::new(),
     }
-}
-
-fn load_super_class(
-    cp: &[class::ConstantPoolInfo],
-    class_index: u16,
-) -> Option<Arc<runtime::Class>> {
-    // java.lang.Object
-    if class_index == 0 {
-        return None;
-    }
-    let super_class = resolve_cp_class(cp, class_index);
-    let class = BOOTSTRAP_CLASS_LOADER
-        .get()
-        .unwrap()
-        .resolve_class(&super_class.name);
-    Some(class)
-}
-
-fn load_interfaces(cp: &[class::ConstantPoolInfo], interfaces: &[u16]) -> Vec<Arc<runtime::Class>> {
-    interfaces
-        .iter()
-        .map(|index| {
-            let interface = resolve_cp_class(cp, *index);
-            BOOTSTRAP_CLASS_LOADER
-                .get()
-                .unwrap()
-                .resolve_class(&interface.name)
-        })
-        .collect()
 }
 
 fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::ConstantPoolInfo> {
     let mut constant_pool = Vec::with_capacity(cp.len());
+    let mut class_info_map = HashMap::new();
+    for (i, cp_info) in cp.iter().enumerate() {
+        if let class::ConstantPoolInfo::Class { name_index } = cp_info {
+            class_info_map.insert(
+                i as u16 + 1,
+                CpClassInfo {
+                    name: resolve_cp_utf8(cp, *name_index).to_str().into(),
+                    class: Default::default(),
+                },
+            );
+        }
+    }
+
     for cp_info in cp {
         type Cpi = runtime::ConstantPoolInfo;
         let constant_pool_info = match cp_info {
@@ -113,7 +97,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::Double(v) => Cpi::Double(*v),
             class::ConstantPoolInfo::Class { name_index } => Cpi::Class(CpClassInfo {
                 name: resolve_cp_utf8(cp, *name_index).to_str().into(),
-                class: RwLock::new(None),
+                class: Default::default(),
             }),
             class::ConstantPoolInfo::String { string_index } => {
                 Cpi::String(resolve_cp_utf8(cp, *string_index))
@@ -122,7 +106,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
                 class_index,
                 name_and_type_index,
             } => Cpi::Fieldref {
-                class: resolve_cp_class(cp, *class_index),
+                class: class_info_map[class_index].clone(),
                 name_and_type: resolve_cp_name_and_type_field(cp, *name_and_type_index),
                 field_index: FieldIndex::Unresolved,
             },
@@ -130,14 +114,14 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
                 class_index,
                 name_and_type_index,
             } => Cpi::Methodref {
-                class: resolve_cp_class(cp, *class_index),
+                class: class_info_map[class_index].clone(),
                 name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
             },
             class::ConstantPoolInfo::InterfaceMethodref {
                 class_index,
                 name_and_type_index,
             } => Cpi::InterfaceMethodref {
-                class: resolve_cp_class(cp, *class_index),
+                class: class_info_map[class_index].clone(),
                 name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
             },
             class::ConstantPoolInfo::NameAndType {
@@ -163,23 +147,26 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
     constant_pool
 }
 
-fn parse_field(cp: &[class::ConstantPoolInfo], field: &class::FieldInfo) -> runtime::FieldInfo {
-    let descriptor = resolve_cp_utf8(cp, field.descriptor_index);
+fn parse_field(cp: &[runtime::ConstantPoolInfo], field: &class::FieldInfo) -> runtime::FieldInfo {
+    let descriptor = resolve_runtime_cp_utf8(cp, field.descriptor_index);
     let (_, descriptor) = parse_field_descriptor(&descriptor.to_str()).unwrap();
     runtime::FieldInfo {
         access_flags: field.access_flags,
-        name: resolve_cp_utf8(cp, field.name_index),
+        name: resolve_runtime_cp_utf8(cp, field.name_index),
         descriptor,
         attributes: field.attributes.iter().map(convert_attribute(cp)).collect(),
     }
 }
 
-fn parse_method(cp: &[class::ConstantPoolInfo], method: &class::MethodInfo) -> runtime::MethodInfo {
-    let descriptor = resolve_cp_utf8(cp, method.descriptor_index);
+fn parse_method(
+    cp: &[runtime::ConstantPoolInfo],
+    method: &class::MethodInfo,
+) -> runtime::MethodInfo {
+    let descriptor = resolve_runtime_cp_utf8(cp, method.descriptor_index);
     let (_, descriptor) = parse_method_descriptor(&descriptor.to_str()).unwrap();
     runtime::MethodInfo {
         access_flags: method.access_flags,
-        name: resolve_cp_utf8(cp, method.name_index),
+        name: resolve_runtime_cp_utf8(cp, method.name_index),
         descriptor,
         attributes: method
             .attributes
@@ -190,7 +177,7 @@ fn parse_method(cp: &[class::ConstantPoolInfo], method: &class::MethodInfo) -> r
 }
 
 fn convert_attribute(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&class::AttributeInfo) -> runtime::AttributeInfo + '_ {
     move |a| {
         // TODO: unwrap
@@ -251,29 +238,36 @@ fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc
     Arc::clone(string)
 }
 
-fn resolve_cp_package(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
-    let class::ConstantPoolInfo::Package { name_index } = &constant_pool[index as usize - 1] else {
+fn resolve_runtime_cp_utf8(
+    constant_pool: &[runtime::ConstantPoolInfo],
+    index: u16,
+) -> Arc<JavaStr> {
+    let runtime::ConstantPoolInfo::Utf8(string) = &constant_pool[index as usize - 1] else {
+        panic!("cannot find string {}", index);
+    };
+    Arc::clone(string)
+}
+
+fn resolve_cp_package(constant_pool: &[runtime::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
+    let runtime::ConstantPoolInfo::Package(name) = &constant_pool[index as usize - 1] else {
         panic!("cannot find package {}", index);
     };
-    resolve_cp_utf8(constant_pool, *name_index)
+    Arc::clone(name)
 }
 
-fn resolve_cp_module(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
-    let class::ConstantPoolInfo::Module { name_index } = &constant_pool[index as usize - 1] else {
+fn resolve_cp_module(constant_pool: &[runtime::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
+    let runtime::ConstantPoolInfo::Module(name) = &constant_pool[index as usize - 1] else {
         panic!("cannot find module {}", index);
     };
-    resolve_cp_utf8(constant_pool, *name_index)
+    Arc::clone(name)
 }
 
-fn resolve_cp_class(constant_pool: &[class::ConstantPoolInfo], class_index: u16) -> CpClassInfo {
-    let class::ConstantPoolInfo::Class { name_index } = &constant_pool[class_index as usize - 1]
+fn resolve_cp_class(constant_pool: &[runtime::ConstantPoolInfo], class_index: u16) -> &CpClassInfo {
+    let runtime::ConstantPoolInfo::Class(cp_class_info) = &constant_pool[class_index as usize - 1]
     else {
         panic!("cannot find class {}", class_index);
     };
-    CpClassInfo {
-        name: resolve_cp_utf8(constant_pool, *name_index).to_str().into(),
-        class: RwLock::new(None),
-    }
+    cp_class_info
 }
 
 fn resolve_cp_name_and_type_field(
@@ -336,16 +330,14 @@ fn resolve_cp_name_and_type(
     CpNameAndTypeInfo::<Arc<JavaStr>> { name, descriptor }
 }
 
-fn resolve_constant_value(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Const {
+fn resolve_constant_value(constant_pool: &[runtime::ConstantPoolInfo], index: u16) -> Const {
     match &constant_pool[index as usize - 1] {
-        class::ConstantPoolInfo::Integer(i) => Const::Int(*i),
-        class::ConstantPoolInfo::Float(f) => Const::Float(*f),
-        class::ConstantPoolInfo::Long(l) => Const::Long(*l),
-        class::ConstantPoolInfo::Double(d) => Const::Double(*d),
-        class::ConstantPoolInfo::String { string_index } => {
-            Const::String(resolve_cp_utf8(constant_pool, *string_index))
-        }
-        class::ConstantPoolInfo::Utf8(string) => Const::String(Arc::clone(string)),
+        runtime::ConstantPoolInfo::Integer(i) => Const::Int(*i),
+        runtime::ConstantPoolInfo::Float(f) => Const::Float(*f),
+        runtime::ConstantPoolInfo::Long(l) => Const::Long(*l),
+        runtime::ConstantPoolInfo::Double(d) => Const::Double(*d),
+        runtime::ConstantPoolInfo::String(str) => Const::String(Arc::clone(str)),
+        runtime::ConstantPoolInfo::Utf8(string) => Const::String(Arc::clone(string)),
         _ => {
             panic!("cannot find constant_value {}", index);
         }
@@ -355,10 +347,10 @@ fn resolve_constant_value(constant_pool: &[class::ConstantPoolInfo], index: u16)
 fn parse_attribute<'a>(
     attribute_name_index: u16,
     mut input: &'a [u8],
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> IResult<&'a [u8], runtime::AttributeInfo> {
     // TODO: move this to parser
-    let attribute_name = resolve_cp_utf8(constant_pool, attribute_name_index);
+    let attribute_name = resolve_runtime_cp_utf8(constant_pool, attribute_name_index);
 
     let attribute_info = match attribute_name.to_str().as_ref() {
         "Code" => {
@@ -396,7 +388,10 @@ fn parse_attribute<'a>(
         "Signature" => {
             let signature_index;
             (input, signature_index) = be_u16(input)?;
-            runtime::AttributeInfo::Signature(resolve_cp_utf8(constant_pool, signature_index))
+            runtime::AttributeInfo::Signature(resolve_runtime_cp_utf8(
+                constant_pool,
+                signature_index,
+            ))
         }
         "Deprecated" => runtime::AttributeInfo::Deprecated,
         // TODO: only used for verification
@@ -406,7 +401,10 @@ fn parse_attribute<'a>(
         "SourceFile" => {
             let sourcefile_index;
             (input, sourcefile_index) = be_u16(input)?;
-            runtime::AttributeInfo::SourceFile(resolve_cp_utf8(constant_pool, sourcefile_index))
+            runtime::AttributeInfo::SourceFile(resolve_runtime_cp_utf8(
+                constant_pool,
+                sourcefile_index,
+            ))
         }
         "LineNumberTable" => {
             let (line_number_table_length, line_number_table);
@@ -541,16 +539,18 @@ fn parse_attribute<'a>(
         //    } hashes[hashes_count];
         //
         //  }
-        // ModuleTarget
-        // TargetPlatform_attribute {
-        //    // index to CONSTANT_utf8_info structure in constant pool representing
-        //    // the string "ModuleTarget"
-        //    u2 attribute_name_index;
-        //    u4 attribute_length;
-        //
-        //    // index to CONSTANT_utf8_info structure with the target platform
-        //    u2 target_platform_index;
-        //  }
+        // TODO:
+        "ModuleHashes" => runtime::AttributeInfo::ModuleHashes,
+        "ModuleTarget" => {
+            let target_platform_index;
+            (input, target_platform_index) = be_u16(input)?;
+            runtime::AttributeInfo::ModuleTarget(resolve_runtime_cp_utf8(
+                constant_pool,
+                target_platform_index,
+            ))
+        }
+        // TODO:
+        "InnerClasses" => runtime::AttributeInfo::InnerClasses,
         _ => {
             // TODO:
             eprintln!("Unknown attribute {}", attribute_name);
@@ -566,7 +566,7 @@ fn parse_attribute<'a>(
 }
 
 fn parse_attribute_raw(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], runtime::AttributeInfo> + '_ {
     move |input| {
         let (input, attribute_name_index) = be_u16(input)?;
@@ -582,7 +582,7 @@ fn parse_attribute_raw(
 
 fn parse_attributes<'a>(
     input: &'a [u8],
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> IResult<&'a [u8], Vec<runtime::AttributeInfo>> {
     let (input, attributes_count) = be_u16(input)?;
 
@@ -594,7 +594,7 @@ fn parse_attributes<'a>(
 
 fn parse_code_attribute<'a>(
     input: &'a [u8],
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> IResult<&'a [u8], runtime::AttributeInfo> {
     let (input, max_stack) = be_u16(input)?;
     let (input, max_locals) = be_u16(input)?;
@@ -625,7 +625,7 @@ fn parse_code_attribute<'a>(
 }
 
 fn parse_exception_table(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], runtime::ExceptionTableItem> + '_ {
     move |input| {
         let (input, start_pc) = be_u16(input)?;
@@ -645,18 +645,18 @@ fn parse_exception_table(
                 start_pc,
                 end_pc,
                 handler_pc,
-                catch_type: catch_type_info,
+                catch_type: catch_type_info.cloned(),
             },
         ))
     }
 }
 
 fn parse_annotation(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], Annotation> + '_ {
     move |input| {
         let (input, type_index) = be_u16(input)?;
-        let type_str = resolve_cp_utf8(constant_pool, type_index);
+        let type_str = resolve_runtime_cp_utf8(constant_pool, type_index);
         let (input, num_element_value_pairs) = be_u16(input)?;
         let (input, element_value_pairs) = count(
             parse_element_value_pair(constant_pool),
@@ -676,11 +676,11 @@ fn parse_annotation(
 }
 
 fn parse_element_value_pair(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], ElementValuePair> + '_ {
     move |input| {
         let (input, element_name_index) = be_u16(input)?;
-        let element_name = resolve_cp_utf8(constant_pool, element_name_index);
+        let element_name = resolve_runtime_cp_utf8(constant_pool, element_name_index);
         let (input, value) = parse_element_value(constant_pool)(input)?;
         Ok((
             input,
@@ -693,7 +693,7 @@ fn parse_element_value_pair(
 }
 
 fn parse_element_value(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], ElementValue> + '_ {
     move |input| {
         let (input, tag) = u8(input)?;
@@ -718,14 +718,14 @@ fn parse_element_value(
                 (input, type_name_index) = be_u16(input)?;
                 (input, const_name_index) = be_u16(input)?;
                 ElementValue::Enum {
-                    type_name: resolve_cp_utf8(constant_pool, type_name_index),
-                    const_name: resolve_cp_utf8(constant_pool, const_name_index),
+                    type_name: resolve_runtime_cp_utf8(constant_pool, type_name_index),
+                    const_name: resolve_runtime_cp_utf8(constant_pool, const_name_index),
                 }
             }
             b'c' => {
                 let class_info_index;
                 (input, class_info_index) = be_u16(input)?;
-                let class_info = resolve_cp_utf8(constant_pool, class_info_index);
+                let class_info = resolve_runtime_cp_utf8(constant_pool, class_info_index);
                 // TODO: unwrap
                 let class = parse_return_type_descriptor(&class_info.to_str())
                     .unwrap()
@@ -759,7 +759,7 @@ fn parse_element_value(
 
 fn parse_constant_value<'a>(
     input: &'a [u8],
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
     converter: impl FnOnce(runtime::Const) -> runtime::Const,
 ) -> IResult<&'a [u8], runtime::Const> {
     let (input, const_value_index) = be_u16(input)?;
@@ -768,14 +768,14 @@ fn parse_constant_value<'a>(
 }
 
 fn parse_local_variable(
-    constant_pool: &[class::ConstantPoolInfo],
+    constant_pool: &[runtime::ConstantPoolInfo],
 ) -> impl FnMut(&[u8]) -> IResult<&[u8], LocalVariable> + '_ {
     move |input| {
         let (input, start_pc) = be_u16(input)?;
         let (input, length) = be_u16(input)?;
         let (input, name_index) = be_u16(input)?;
         let (input, descriptor_index) = be_u16(input)?;
-        let descriptor = resolve_cp_utf8(constant_pool, descriptor_index);
+        let descriptor = resolve_runtime_cp_utf8(constant_pool, descriptor_index);
         // TODO: unwrap
         let (_, descriptor) = parse_field_descriptor(&descriptor.to_str()).unwrap();
         let (input, index) = be_u16(input)?;
@@ -785,7 +785,7 @@ fn parse_local_variable(
             LocalVariable {
                 start_pc,
                 length,
-                name: resolve_cp_utf8(constant_pool, name_index),
+                name: resolve_runtime_cp_utf8(constant_pool, name_index),
                 descriptor,
                 index,
             },

@@ -10,7 +10,6 @@ use nom::{
     multi::count,
     number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u32, u8},
 };
-use std::sync::Arc;
 
 pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
     let (input, (minor, major)) = parse_header(input)?;
