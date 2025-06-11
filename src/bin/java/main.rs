@@ -1,10 +1,7 @@
-use std::{fs::File, io::Read, sync::Arc};
-
-use jvm::runtime::{ClassPathModule, JModModule, init_bootstrap_class_loader, register_natives};
+use jvm::runtime::{init_bootstrap_class_loader, register_natives, ClassPathModule, JModModule};
 use jvm::{
-    class::parser,
     descriptor,
-    runtime::{self, parse_class},
+    runtime::{self},
 };
 
 fn main() {

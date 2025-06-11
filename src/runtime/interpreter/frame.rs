@@ -1,6 +1,3 @@
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-
 use super::{Next, instructions};
 use crate::class::JavaStr;
 use crate::consts::MethodAccessFlag;
@@ -9,11 +6,15 @@ use crate::runtime::CodeAttribute;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::interpreter::{InterpreterEnv, global};
 use crate::{descriptor::FieldType, runtime};
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Thread {
     top_frame: Option<Box<Frame>>,
     max_frame_size: usize,
     pc: usize,
+    thread_id: usize,
 }
 
 pub struct Frame {
@@ -94,10 +95,25 @@ impl Variable {
 
 impl Thread {
     pub fn new(max_frame_size: usize) -> Thread {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        let mut last = COUNTER.load(Ordering::Relaxed);
+        let thread_id = loop {
+            let Some(id) = last.checked_add(1) else {
+                panic!("thread id overflow");
+            };
+
+            match COUNTER.compare_exchange_weak(last, id, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break id,
+                Err(id) => last = id,
+            }
+        };
+
         Thread {
             top_frame: None,
             max_frame_size,
             pc: 0,
+            thread_id,
         }
     }
 
