@@ -1,4 +1,5 @@
 use dashmap::{DashMap, Entry};
+use std::sync::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -7,12 +8,14 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
-    thread,
 };
 use zip::{ZipArchive, read::ZipFile};
 
+use crate::class::JavaStr;
+use crate::consts::FieldAccessFlag;
+use crate::descriptor::{FieldDescriptor, FieldType};
 use crate::runtime::class_loader::resolve_cp_class;
-use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
+use crate::runtime::{Class, FieldIndex, FieldInfo, Variable, VmEnv};
 use crate::{
     class::{self, parser},
     runtime,
@@ -49,7 +52,11 @@ impl BootstrapClassLoader {
         self.modules.push(module);
     }
 
-    pub(in crate::runtime) fn resolve_class(&self, class_name: &str) -> Arc<runtime::Class> {
+    pub(in crate::runtime) fn resolve_class(
+        &self,
+        env: &VmEnv,
+        class_name: &str,
+    ) -> Arc<runtime::Class> {
         if let Some(class) = self.class_registry.get(class_name) {
             return Arc::clone(&class);
         }
@@ -57,7 +64,7 @@ impl BootstrapClassLoader {
         let class = match self.class_registry.entry(class_name.to_string()) {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {
-                let class = Arc::new(self.load_class(class_name));
+                let class = Arc::new(self.load_class(env, class_name));
                 println!("loaded {}", class_name);
                 entry.insert(Arc::clone(&class));
                 need_init = true;
@@ -69,7 +76,7 @@ impl BootstrapClassLoader {
             // execute clinit
             if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
                 println!("clinit found for {:?}", clinit);
-                let mut init_thread = runtime::Thread::new(1024);
+                let mut init_thread = env.get_thread().new_native_frame_group();
                 init_thread.new_frame(
                     Arc::clone(&class),
                     &clinit.name.to_str(),
@@ -82,7 +89,7 @@ impl BootstrapClassLoader {
         class
     }
 
-    fn load_class(&self, name: &str) -> runtime::Class {
+    fn load_class(&self, env: &VmEnv, name: &str) -> runtime::Class {
         let package = if let Some((pkg, _)) = name.rsplit_once('/') {
             pkg
         } else {
@@ -94,28 +101,114 @@ impl BootstrapClassLoader {
 
         let class_file = &module.get_class_file(&(name.to_string() + ".class"));
         let mut class = runtime::parse_class(class_file);
-        self.load_super_class(&mut class, class_file.super_class);
-        self.load_interfaces(&mut class, &class_file.interfaces);
+        let super_class = self.load_super_class(env, &mut class, class_file.super_class);
+        self.load_interfaces(env, &mut class, &class_file.interfaces);
+
+        let super_var_num = super_class.as_ref().map(|c| c.field_var_size).unwrap_or(0);
+        let field_var_size = Self::resolve_this_class_field_ref(
+            &class.fields,
+            &mut class.constant_pool,
+            &class.class_name,
+            super_var_num,
+            &mut class.static_fields,
+        );
+        class.field_var_size = field_var_size;
+
         class
     }
 
-    fn load_super_class(&self, class: &mut runtime::Class, class_index: u16) {
+    fn load_super_class(
+        &self,
+        env: &VmEnv,
+        class: &mut runtime::Class,
+        class_index: u16,
+    ) -> Option<Arc<Class>> {
         // java.lang.Object
         if class_index == 0 {
-            return;
+            return None;
         }
         let super_class = resolve_cp_class(&class.constant_pool, class_index);
-        let loaded = self.resolve_class(&super_class.name);
+        let loaded = self.resolve_class(env, &super_class.name);
         super_class.set_class(&loaded);
-        class.super_class.replace(loaded);
+        class.super_class.replace(Arc::clone(&loaded));
+        Some(loaded)
     }
-    fn load_interfaces(&self, class: &mut runtime::Class, interfaces: &[u16]) {
+    fn load_interfaces(&self, env: &VmEnv, class: &mut runtime::Class, interfaces: &[u16]) {
         for index in interfaces {
             let interface = resolve_cp_class(&class.constant_pool, *index);
-            let loaded = self.resolve_class(&interface.name);
+            let loaded = self.resolve_class(env, &interface.name);
             interface.set_class(&loaded);
             class.interfaces.push(loaded);
         }
+    }
+
+    fn resolve_this_class_field_ref(
+        fields: &[FieldInfo],
+        cp: &mut [runtime::ConstantPoolInfo],
+        class_name: &str,
+        mut instance_size: usize,
+        static_fields: &mut Vec<RwLock<Variable>>,
+    ) -> usize {
+        let mut field_map: HashMap<(&JavaStr, &FieldDescriptor), FieldIndex> = HashMap::new();
+        for field in fields {
+            if field.access_flags.contains(FieldAccessFlag::STATIC) {
+                field_map.insert(
+                    (&field.name, &field.descriptor),
+                    FieldIndex::Static(static_fields.len() as u16),
+                );
+                match field.descriptor.0 {
+                    FieldType::Byte
+                    | FieldType::Char
+                    | FieldType::Short
+                    | FieldType::Int
+                    | FieldType::Boolean => static_fields.push(RwLock::new(Variable { int: 0 })),
+                    FieldType::Double => {
+                        let (a, b) = Variable::put_double(0.0);
+                        static_fields.push(RwLock::new(a));
+                        static_fields.push(RwLock::new(b));
+                    }
+                    FieldType::Float => static_fields.push(RwLock::new(Variable { float: 0.0 })),
+                    FieldType::Long => {
+                        let (a, b) = Variable::put_long(0);
+                        static_fields.push(RwLock::new(a));
+                        static_fields.push(RwLock::new(b));
+                    }
+                    FieldType::Object(_) | FieldType::Array(_) => {
+                        static_fields.push(RwLock::new(Variable { reference: 0 }))
+                    }
+                }
+            } else {
+                field_map.insert(
+                    (&field.name, &field.descriptor),
+                    FieldIndex::Instance(instance_size as u16),
+                );
+                let size = if field.descriptor.0.is_long() { 2 } else { 1 };
+                instance_size += size;
+            }
+        }
+        for cp_in_file in cp.iter_mut() {
+            match cp_in_file {
+                runtime::ConstantPoolInfo::Fieldref {
+                    class,
+                    name_and_type,
+                    field_index,
+                } => {
+                    if class.name.as_ref() != class_name {
+                        *field_index = FieldIndex::NotThisClass;
+                        continue;
+                    }
+                    let index =
+                        field_map.get(&(name_and_type.name.as_ref(), &name_and_type.descriptor));
+                    if let Some(index) = index {
+                        *field_index = *index;
+                    } else {
+                        *field_index = FieldIndex::NotThisClass;
+                    }
+                }
+                _ => continue,
+            }
+        }
+        instance_size
     }
 }
 

@@ -26,7 +26,7 @@ pub struct Class {
     pub(crate) methods: Vec<MethodInfo>,
     pub(crate) attributes: Vec<AttributeInfo>,
     pub(crate) field_var_size: usize,
-    pub(crate) static_fields: RwLock<Vec<Variable>>,
+    pub(crate) static_fields: Vec<RwLock<Variable>>,
     pub(crate) clinit_call: Once,
 }
 
@@ -49,6 +49,10 @@ impl Class {
     }
     pub(super) fn get_constant(&self, index: u16) -> &ConstantPoolInfo {
         &self.constant_pool[index as usize - 1]
+    }
+
+    pub(super) fn get_static_field(&self, index: u16) -> Variable {
+        self.static_fields[index as usize].read().unwrap().clone()
     }
 }
 

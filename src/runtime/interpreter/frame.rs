@@ -2,29 +2,29 @@ use super::{Next, instructions};
 use crate::class::JavaStr;
 use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
-use crate::runtime::CodeAttribute;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::interpreter::{InterpreterEnv, global};
+use crate::runtime::{CodeAttribute, VmEnv};
 use crate::{descriptor::FieldType, runtime};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub struct Thread {
-    top_frame: Option<Box<Frame>>,
+pub struct Thread<'t> {
+    pub(in crate::runtime) top_frame: Option<Box<Frame>>,
     max_frame_size: usize,
-    pc: usize,
     thread_id: usize,
+    pub(in crate::runtime) previous_thread: Option<&'t Thread<'t>>,
 }
 
 pub struct Frame {
-    pub(super) class: Arc<runtime::Class>,
+    pub(in crate::runtime) class: Arc<runtime::Class>,
     pub(super) code: Arc<[u8]>,
     pub(super) return_type: ReturnType,
     pub(super) locals: Vec<Variable>,
     pub(super) stack: Vec<Variable>,
-    pub(super) previous_frame: Option<Box<Frame>>,
-    pub(super) method_name: String,
+    pub(in crate::runtime) previous_frame: Option<Box<Frame>>,
+    pub(in crate::runtime) method_name: String,
     pub(super) param_descriptor: Vec<FieldType>,
     pub(super) is_static: bool,
 }
@@ -35,9 +35,9 @@ pub union Variable {
     // byte: i8,
     // char: u16,
     // short: i16,
-    pub(super) int: i32,
-    pub(super) float: f32,
-    pub(super) reference: u32,
+    pub(in crate::runtime) int: i32,
+    pub(in crate::runtime) float: f32,
+    pub(in crate::runtime) reference: u32,
     pub(super) return_address: u32,
     pub(super) void: (),
 }
@@ -93,8 +93,8 @@ impl Variable {
     }
 }
 
-impl Thread {
-    pub fn new(max_frame_size: usize) -> Thread {
+impl Thread<'_> {
+    pub fn new(max_frame_size: usize) -> Self {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
         let mut last = COUNTER.load(Ordering::Relaxed);
@@ -112,8 +112,8 @@ impl Thread {
         Thread {
             top_frame: None,
             max_frame_size,
-            pc: 0,
             thread_id,
+            previous_thread: None,
         }
     }
 
@@ -124,7 +124,7 @@ impl Thread {
         param_descriptor: &[FieldType],
     ) {
         let loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let main_class = loader.resolve_class(main_class);
+        let main_class = loader.resolve_class(&VmEnv::new(self), main_class);
         self.new_frame(main_class, method_name, param_descriptor, 0);
     }
     pub fn new_frame(
@@ -143,6 +143,15 @@ impl Thread {
             return_address,
             false,
         )
+    }
+
+    pub fn new_native_frame_group(&self) -> Thread<'_> {
+        Thread {
+            top_frame: None,
+            max_frame_size: self.max_frame_size,
+            thread_id: self.thread_id,
+            previous_thread: Some(self),
+        }
     }
 
     fn new_frame_inner(
@@ -257,9 +266,14 @@ impl Thread {
     }
 
     pub fn execute(&mut self) {
-        let mut_pc = &mut self.pc;
+        let mut pc = 0;
         while let Some(mut frame) = self.top_frame.take() {
-            let mut env = InterpreterEnv::new(mut_pc, &mut frame, &global::HEAP);
+            let mut env = InterpreterEnv::new(
+                &mut pc,
+                &mut frame,
+                &global::HEAP,
+                self.new_native_frame_group(),
+            );
             let next = env.execute();
 
             match next {
@@ -270,7 +284,7 @@ impl Thread {
                         None => (true, false),
                     };
                     self.top_frame = frame.previous_frame;
-                    *mut_pc = return_pc;
+                    pc = return_pc;
                     if let Some(ref mut frame) = self.top_frame {
                         if !is_void {
                             frame.stack.push(v1);
@@ -279,6 +293,21 @@ impl Thread {
                             }
                         }
                     }
+                    print!(
+                        "return from {}.{}",
+                        frame.class.class_name, frame.method_name
+                    );
+                    if !is_void {
+                        if is_long {
+                            print!(" with {}", unsafe { Variable::get_long(v1, v2) });
+                        } else {
+                            print!(" with {}", unsafe { v1.int });
+                        }
+                    }
+                    println!();
+                }
+                Next::Exception { message } => {
+                    panic!("exception: {}", message);
                 }
                 Next::InvokeSpecial {
                     class,
@@ -291,10 +320,10 @@ impl Thread {
                         class,
                         &name_and_type.name.to_str(),
                         &name_and_type.descriptor.parameters,
-                        *mut_pc + 1,
+                        pc + 1,
                         true,
                     );
-                    *mut_pc = 0;
+                    pc = 0;
                 }
                 Next::InvokeStatic {
                     class,
@@ -307,10 +336,10 @@ impl Thread {
                         class,
                         &name_and_type.name.to_str(),
                         &name_and_type.descriptor.parameters,
-                        *mut_pc + 1,
+                        pc + 1,
                         false,
                     );
-                    *mut_pc = 0;
+                    pc = 0;
                 }
             }
         }

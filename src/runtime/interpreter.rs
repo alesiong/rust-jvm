@@ -2,7 +2,9 @@ mod frame;
 pub(crate) mod global;
 mod instructions;
 
-use super::{Class, CpClassInfo, CpNameAndTypeInfo, NativeEnv, NativeVariable};
+use super::{
+    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, FieldIndex, NativeEnv, NativeVariable, VmEnv,
+};
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
 use crate::runtime::Heap;
@@ -18,6 +20,7 @@ struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
     frame: &'f mut Frame,
     heap: &'static RwLock<Heap>,
+    next_native_thread: Thread<'t>,
 }
 
 enum Next {
@@ -34,14 +37,39 @@ enum Next {
         class: Arc<Class>,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
+    Exception {
+        message: String,
+    },
 }
 
 impl<'t, 'f> InterpreterEnv<'t, 'f> {
-    pub fn new(pc: &'t mut usize, frame: &'f mut Frame, heap: &'static RwLock<Heap>) -> Self {
-        Self { pc, frame, heap }
+    pub fn new(
+        pc: &'t mut usize,
+        frame: &'f mut Frame,
+        heap: &'static RwLock<Heap>,
+        next_native_thread: Thread<'t>,
+    ) -> Self {
+        Self {
+            pc,
+            frame,
+            heap,
+            next_native_thread,
+        }
     }
 
     fn execute(&mut self) -> Next {
+        macro_rules! except {
+            ($expr:expr $(,)?) => {
+                match $expr {
+                    ::std::result::Result::Ok(val) => val,
+                    ::std::result::Result::Err(err) => {
+                        return err;
+                    }
+                }
+            };
+        }
+        let mut wide = false;
+
         use instructions as inst;
         loop {
             let op = self.frame.code[*self.pc];
@@ -72,41 +100,54 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     self.load_n_long(3);
                 }
                 inst::ALOAD | inst::ILOAD | inst::FLOAD => {
-                    let index = self.get_u8_args();
-                    self.load_n(index as usize);
+                    let index = if wide {
+                        wide = false;
+                        self.get_u16_args() as usize
+                    } else {
+                        self.get_u8_args() as usize
+                    };
+                    self.load_n(index);
                 }
                 inst::LLOAD | inst::DLOAD => {
-                    let index = self.get_u8_args();
-                    self.load_n_long(index as usize);
+                    let index = if wide {
+                        wide = false;
+                        self.get_u16_args() as usize
+                    } else {
+                        self.get_u8_args() as usize
+                    };
+                    self.load_n_long(index);
                 }
                 inst::AALOAD => {
-                    // SAFETY: rely on class file checking to ensure correct type
-                    let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
-                    let arr = unsafe { self.frame.stack.pop().unwrap().reference };
-                    // TODO: get arr[index]
-                    if arr == 0 {
-                        // TODO: exception
-                        panic!("NullPointerException");
-                    }
-                    let arr_object = self.heap.read().unwrap().get(arr);
-                    // TODO: check for array type
-                    let value = unsafe { arr_object.get_array_index::<u32>(index as _) };
-
+                    let value = except!(self.arr_load::<u32>());
                     self.frame.stack.push(Variable { reference: value });
                 }
                 inst::IALOAD => {
-                    let index = self.pop_int();
-                    // SAFETY: rely on class file checking to ensure correct type
-                    let arr = unsafe { self.frame.stack.pop().unwrap().reference };
-                    // TODO: get arr[index]
-                    if arr == 0 {
-                        // TODO: exception
-                        panic!("NullPointerException");
-                    }
-                    let arr_object = self.heap.read().unwrap().get(arr);
-                    // TODO: check for array type
-                    let value = unsafe { arr_object.get_array_index::<i32>(index as _) };
+                    let value = except!(self.arr_load::<i32>());
                     self.push_int(value);
+                }
+                inst::BALOAD => {
+                    let value = except!(self.arr_load::<i8>());
+                    self.push_int(value as _);
+                }
+                inst::CALOAD => {
+                    let value = except!(self.arr_load::<u16>());
+                    self.push_int(value as _);
+                }
+                inst::SALOAD => {
+                    let value = except!(self.arr_load::<i16>());
+                    self.push_int(value as _);
+                }
+                inst::FALOAD => {
+                    let value = except!(self.arr_load::<f32>());
+                    self.fconst(value);
+                }
+                inst::LALOAD => {
+                    let value = except!(self.arr_load::<i64>());
+                    self.push_long(value);
+                }
+                inst::DALOAD => {
+                    let value = except!(self.arr_load::<f64>());
+                    self.push_double(value);
                 }
 
                 // store
@@ -137,21 +178,69 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::AASTORE => {
                     // SAFETY: rely on class file checking to ensure correct type
                     let value = unsafe { self.frame.stack.pop().unwrap().reference };
-                    let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
-                    let arr = unsafe { self.frame.stack.pop().unwrap().reference };
-                    // TODO: arr[index] = value
-                    if arr == 0 {
-                        // TODO: exception
-                        panic!("NullPointerException");
-                    }
+                    // TODO: arr type check
+                    except!(self.arr_store(value));
                 }
+                inst::IASTORE => {
+                    let value = self.pop_int();
+                    except!(self.arr_store(value));
+                }
+                inst::BASTORE => {
+                    let value = self.pop_int() as i8;
+                    except!(self.arr_store(value));
+                }
+                inst::CASTORE => {
+                    let value = self.pop_int() as u16;
+                    except!(self.arr_store(value));
+                }
+                inst::SASTORE => {
+                    let value = self.pop_int() as i16;
+                    except!(self.arr_store(value));
+                }
+                inst::FASTORE => {
+                    let value = self.pop_float();
+                    except!(self.arr_store(value));
+                }
+                inst::LASTORE => {
+                    let value = self.pop_long();
+                    except!(self.arr_store(value));
+                }
+                inst::DASTORE => {
+                    let value = self.pop_double();
+                    except!(self.arr_store(value));
+                }
+
                 inst::ASTORE | inst::ISTORE | inst::FSTORE => {
-                    let index = self.get_u8_args();
-                    self.store_n(index as usize);
+                    let index = if wide {
+                        wide = false;
+                        self.get_u16_args() as usize
+                    } else {
+                        self.get_u8_args() as usize
+                    };
+                    self.store_n(index);
                 }
                 inst::LSTORE | inst::DSTORE => {
-                    let index = self.get_u8_args();
-                    self.store_n_long(index as usize);
+                    let index = if wide {
+                        wide = false;
+                        self.get_u16_args() as usize
+                    } else {
+                        self.get_u8_args() as usize
+                    };
+                    self.store_n_long(index);
+                }
+
+                // array
+                inst::ARRAYLENGTH => {
+                    let arr = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if arr == 0 {
+                        return Next::Exception {
+                            message: "NullPointerException".to_string(),
+                        };
+                    }
+                    let arr_obj = self.heap.read().unwrap().get(arr);
+                    // TODO: get arr type
+                    let arr_len = arr_obj.get_array_len::<i32>();
+                    self.push_int(arr_len as _)
                 }
 
                 // const
@@ -286,6 +375,12 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::POP2 => {
                     self.frame.stack.truncate(self.frame.stack.len() - 2);
                 }
+                inst::SWAP => {
+                    let v1 = self.frame.stack.pop().unwrap();
+                    let v2 = self.frame.stack.pop().unwrap();
+                    self.frame.stack.push(v1);
+                    self.frame.stack.push(v2);
+                }
 
                 // arithmetic
                 inst::IADD => {
@@ -358,8 +453,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_int();
                     let b = self.pop_int();
                     if a == 0 {
-                        // TODO:
-                        panic!("ArithmeticException")
+                        return Next::Exception {
+                            message: "ArithmeticException".to_string(),
+                        };
                     }
                     self.push_int(b.wrapping_div(a))
                 }
@@ -367,8 +463,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_long();
                     let b = self.pop_long();
                     if a == 0 {
-                        // TODO:
-                        panic!("ArithmeticException")
+                        return Next::Exception {
+                            message: "ArithmeticException".to_string(),
+                        };
                     }
                     self.push_long(b.wrapping_div(a));
                 }
@@ -387,8 +484,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_int();
                     let b = self.pop_int();
                     if a == 0 {
-                        // TODO:
-                        panic!("ArithmeticException")
+                        return Next::Exception {
+                            message: "ArithmeticException".to_string(),
+                        };
                     }
                     self.frame.stack.push(Variable {
                         int: b.wrapping_rem(a),
@@ -398,8 +496,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_long();
                     let b = self.pop_long();
                     if a == 0 {
-                        // TODO:
-                        panic!("ArithmeticException")
+                        return Next::Exception {
+                            message: "ArithmeticException".to_string(),
+                        };
                     }
                     self.push_long(b.wrapping_rem(a));
                 }
@@ -431,10 +530,14 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 }
 
                 inst::IINC => {
-                    let index = self.get_u8_args();
-                    let con = self.get_i8_args();
+                    let (index, con) = if wide {
+                        wide = false;
+                        (self.get_u16_args() as usize, self.get_u16_args() as i32)
+                    } else {
+                        (self.get_u8_args() as usize, self.get_u8_args() as i32)
+                    };
                     // SAFETY: rely on class file checking to ensure correct type
-                    unsafe { self.frame.locals[index as usize].int += con as i32 };
+                    unsafe { self.frame.locals[index].int += con };
                 }
                 inst::ISHL => {
                     let v2 = self.pop_int();
@@ -698,6 +801,43 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     self.goto(true);
                     continue;
                 }
+                inst::GOTO_W => {
+                    self.goto_w();
+                    continue;
+                }
+                inst::JSR => {
+                    let offset = self.get_i16_args();
+                    self.frame.stack.push(Variable {
+                        return_address: *self.pc as _,
+                    });
+                    *self.pc = self.pc.wrapping_add_signed(offset as _);
+                }
+                inst::JSR_W => {
+                    let offset = self.get_i32_args();
+                    self.frame.stack.push(Variable {
+                        return_address: *self.pc as _,
+                    });
+                    *self.pc = self.pc.wrapping_add_signed(offset as _);
+                }
+                inst::RET => {
+                    let index = if wide {
+                        wide = false;
+                        self.get_u16_args() as usize
+                    } else {
+                        self.get_u8_args() as usize
+                    };
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let return_pc = unsafe { self.frame.locals[index].return_address };
+                    *self.pc = return_pc as _;
+                }
+                inst::LOOKUPSWITCH => {
+                    self.lookup_switch();
+                    continue;
+                }
+                inst::TABLESWITCH => {
+                    self.table_switch();
+                    continue;
+                }
 
                 // oop
                 inst::NEW => {
@@ -712,9 +852,17 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::GETFIELD => {
                     self.get_field();
                 }
+                inst::GETSTATIC => {
+                    self.get_static();
+                }
+                inst::PUTSTATIC => {
+                    // FIXME:
+                    // self.put_static();
+                }
 
                 // call
                 // TODO: invokevirtual should lookup vtable
+                //  do monitor ops for synchronized
                 inst::INVOKESPECIAL | inst::INVOKEVIRTUAL => {
                     let cp_index = self.get_u16_args();
                     let runtime::ConstantPoolInfo::Methodref {
@@ -772,6 +920,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         return_pc: self.pop_return_addr(),
                     };
                 }
+
+                inst::WIDE => {
+                    wide = true;
+                }
+
                 inst::NOP => {}
                 _ => {
                     // skip unknown instructions
@@ -849,6 +1002,24 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     #[inline]
     fn get_i16_args(&mut self) -> i16 {
         self.get_u16_args() as _
+    }
+
+    #[inline]
+    fn get_i32_args(&mut self) -> i32 {
+        let byte1 = self.frame.code[*self.pc + 1] as i32;
+        let byte2 = self.frame.code[*self.pc + 2] as i32;
+        let byte3 = self.frame.code[*self.pc + 3] as i32;
+        let byte4 = self.frame.code[*self.pc + 4] as i32;
+        *self.pc += 4;
+        (byte1 << 24) | (byte2 << 16) | (byte3 << 8) | byte4
+    }
+    #[inline]
+    fn get_i32_args_from(&self, pc: usize) -> i32 {
+        let byte1 = self.frame.code[pc + 1] as i32;
+        let byte2 = self.frame.code[pc + 2] as i32;
+        let byte3 = self.frame.code[pc + 3] as i32;
+        let byte4 = self.frame.code[pc + 4] as i32;
+        (byte1 << 24) | (byte2 << 16) | (byte3 << 8) | byte4
     }
 
     #[inline]
@@ -1048,6 +1219,42 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
+    fn get_static(&mut self) {
+        let cp_index = self.get_u16_args();
+        let runtime::ConstantPoolInfo::Fieldref {
+            class,
+            name_and_type,
+            field_index,
+        } = self.frame.class.get_constant(cp_index)
+        else {
+            panic!("invalid constant type {}", cp_index);
+        };
+
+        let is_long = matches!(
+            name_and_type.descriptor.0,
+            descriptor::FieldType::Long | descriptor::FieldType::Double
+        );
+        let class = self.resolve_class(class);
+
+        match field_index {
+            FieldIndex::NotThisClass => {
+                // let class = self.resolve_class(class);
+            }
+            FieldIndex::Static(index) => {
+                self.frame
+                    .stack
+                    .push(self.frame.class.get_static_field(*index));
+                if is_long {
+                    self.frame
+                        .stack
+                        .push(self.frame.class.get_static_field(*index + 1));
+                }
+            }
+            _ => panic!("invalid field type {:?}", field_index),
+        }
+    }
+
+    #[inline]
     fn ldc(&mut self, index: u16) {
         match self.frame.class.get_constant(index) {
             runtime::ConstantPoolInfo::Integer(i) => self.iconst(*i),
@@ -1062,6 +1269,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             }
         }
     }
+
+    #[inline]
     fn ldc2(&mut self, index: u16) {
         match self.frame.class.get_constant(index) {
             runtime::ConstantPoolInfo::Long(l) => {
@@ -1076,6 +1285,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
+    #[inline]
     fn fcmp(&mut self, nan: i32) {
         let v2 = self.pop_float();
         let v1 = self.pop_float();
@@ -1087,6 +1297,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
+    #[inline]
     fn dcmp(&mut self, nan: i32) {
         let v2 = self.pop_double();
         let v1 = self.pop_double();
@@ -1098,6 +1309,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
+    #[inline]
     fn goto(&mut self, jump: bool) -> bool {
         let offset = self.get_i16_args();
         if jump {
@@ -1105,6 +1317,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             return true;
         }
         false
+    }
+
+    fn goto_w(&mut self) {
+        let offset = self.get_i32_args();
+        *self.pc = self.pc.wrapping_add_signed((offset - 4) as isize);
     }
 
     fn invoke_native(&mut self) {
@@ -1176,12 +1393,82 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
     }
 
+    fn arr_load<T: ArrayType>(&mut self) -> Result<T, Next> {
+        let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
+        let arr = unsafe { self.frame.stack.pop().unwrap().reference };
+        if arr == 0 {
+            return Err(Next::Exception {
+                message: "NullPointerException".to_string(),
+            });
+        }
+        let arr_object = self.heap.read().unwrap().get(arr);
+        // TODO: check for array type
+        // TODO: check for array size
+        Ok(unsafe { arr_object.get_array_index::<T>(index as _) })
+    }
+
+    fn arr_store<T: ArrayType>(&mut self, value: T) -> Result<(), Next> {
+        let index = self.pop_int();
+        let arr = unsafe { self.frame.stack.pop().unwrap().reference };
+        if arr == 0 {
+            return Err(Next::Exception {
+                message: "NullPointerException".to_string(),
+            });
+        }
+        // TODO: check array size
+        let arr_obj = self.heap.read().unwrap().get(arr);
+        unsafe {
+            // SAFETY: must be array
+            arr_obj.put_array_index(index as _, value);
+        }
+        Ok(())
+    }
+
+    fn lookup_switch(&mut self) {
+        let start_pc = *self.pc;
+        *self.pc = (*self.pc & 4) + 3;
+        let default = self.get_i32_args();
+        let npairs = self.get_i32_args();
+        let key = self.pop_int();
+
+        for _ in 0..npairs {
+            let mat = self.get_i32_args();
+            let offset = self.get_i32_args();
+            if key == mat {
+                *self.pc = start_pc.wrapping_add_signed(offset as isize);
+                return;
+            }
+        }
+        *self.pc = start_pc.wrapping_add_signed(default as isize);
+    }
+    fn table_switch(&mut self) {
+        let start_pc = *self.pc;
+        *self.pc = (*self.pc & 4) + 3;
+        let default = self.get_i32_args();
+        let low = self.get_i32_args();
+        let high = self.get_i32_args();
+        let index = self.pop_int();
+
+        if index < low || index > high {
+            *self.pc = start_pc.wrapping_add_signed(default as isize);
+            return;
+        }
+        let pos = index - low;
+        let offset = self.get_i32_args_from(*self.pc + 4 * pos as usize);
+        *self.pc = start_pc.wrapping_add_signed(offset as isize);
+    }
+
     fn resolve_class(&self, class: &CpClassInfo) -> Arc<Class> {
-        if &class.name == &self.frame.class.class_name {
+        if class.name == self.frame.class.class_name {
             Arc::clone(&self.frame.class)
         } else {
             let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-            class.get_or_load_class(|| bootstrap_class_loader.resolve_class(&class.name))
+            class.get_or_load_class(|| {
+                bootstrap_class_loader.resolve_class(
+                    &VmEnv::with_cur_frame(&self.next_native_thread, self.frame),
+                    &class.name,
+                )
+            })
         }
     }
 }

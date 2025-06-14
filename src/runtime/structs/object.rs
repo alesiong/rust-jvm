@@ -74,12 +74,17 @@ impl Object {
     /// # Safety
     ///
     /// Must ensure that this object is array of type T
-    unsafe fn get_array_fields<T>(&self) -> *mut [T] {
+    unsafe fn get_array_fields<T: ArrayType>(&self) -> *mut [T] {
         let fields = unsafe { &mut *self.fields_or_array.get() };
         std::ptr::slice_from_raw_parts_mut(
             fields as *mut [u8] as *mut T,
             fields.len() / size_of::<T>(),
         )
+    }
+
+    pub fn get_array_len<T: ArrayType>(&self) -> usize {
+        let arr = &self.fields_or_array.get();
+        arr.len() / size_of::<T>()
     }
 }
 
@@ -168,7 +173,17 @@ impl Default for Heap {
     }
 }
 
-trait ArrayType: Default + Copy {}
+trait Sealed {}
+impl Sealed for i8 {}
+impl Sealed for u16 {}
+impl Sealed for f32 {}
+impl Sealed for f64 {}
+impl Sealed for i16 {}
+impl Sealed for i32 {}
+impl Sealed for i64 {}
+impl Sealed for u32 {}
+
+pub trait ArrayType: Default + Copy + Sealed {}
 impl ArrayType for i8 {}
 impl ArrayType for u16 {}
 impl ArrayType for f32 {}

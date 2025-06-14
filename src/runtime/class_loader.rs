@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::convert::identity;
-use std::sync::{Arc, Once, RwLock};
-
 use nom::{
     IResult, Parser,
     bytes::complete::take,
@@ -9,6 +5,10 @@ use nom::{
     multi::count,
     number::complete::{be_u16, be_u32, u8},
 };
+use std::collections::HashMap;
+use std::convert::identity;
+use std::sync::atomic::AtomicPtr;
+use std::sync::{Arc, Once, RwLock};
 
 use crate::runtime::{MethodInfo, Module, ModuleExport};
 use crate::{
@@ -33,7 +33,7 @@ pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
 pub fn parse_class(class_file: &class::Class) -> runtime::Class {
-    let mut constant_pool = parse_constant_pool(&class_file.constant_pool);
+    let constant_pool = parse_constant_pool(&class_file.constant_pool);
 
     let fields: Vec<_> = class_file
         .fields
@@ -53,10 +53,6 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
 
     let class_name = Arc::clone(&resolve_cp_class(&constant_pool, class_file.this_class).name);
 
-    // TODO: resolve in class loader
-    let (field_var_size, static_field_size) =
-        resolve_this_class_field_ref(&fields, &mut constant_pool, &class_name);
-
     runtime::Class {
         access_flags: class_file.access_flags,
         class_name: Arc::clone(&class_name),
@@ -66,8 +62,8 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         methods,
         attributes,
         constant_pool,
-        field_var_size,
-        static_fields: RwLock::new(vec![]),
+        field_var_size: 0,
+        static_fields: vec![],
         clinit_call: Once::new(),
     }
 }
@@ -185,50 +181,6 @@ fn convert_attribute(
             .unwrap()
             .1
     }
-}
-
-fn resolve_this_class_field_ref(
-    fields: &[FieldInfo],
-    cp: &mut [runtime::ConstantPoolInfo],
-    class_name: &str,
-) -> (usize, usize) {
-    let mut field_map: HashMap<(&JavaStr, &FieldDescriptor), FieldIndex> = HashMap::new();
-    let mut static_size = 0;
-    let mut instance_size = 0;
-    for field in fields {
-        let size = if field.descriptor.0.is_long() { 2 } else { 1 };
-        if field.access_flags.contains(FieldAccessFlag::STATIC) {
-            field_map.insert(
-                (&field.name, &field.descriptor),
-                FieldIndex::Static(static_size),
-            );
-            static_size += size;
-        } else {
-            field_map.insert(
-                (&field.name, &field.descriptor),
-                FieldIndex::Instance(instance_size),
-            );
-            instance_size += size;
-        }
-    }
-    for cp_in_file in cp.iter_mut() {
-        match cp_in_file {
-            runtime::ConstantPoolInfo::Fieldref {
-                class,
-                name_and_type,
-                field_index,
-            } => {
-                if class.name.as_ref() != class_name {
-                    *field_index = FieldIndex::NotThisClass;
-                    continue;
-                }
-
-                *field_index = field_map[&(name_and_type.name.as_ref(), &name_and_type.descriptor)];
-            }
-            _ => continue,
-        }
-    }
-    (instance_size as usize, static_size as usize)
 }
 
 fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
