@@ -9,13 +9,14 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use zip::{ZipArchive, read::ZipFile};
+use zip::{read::ZipFile, ZipArchive};
 
 use crate::class::JavaStr;
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{FieldDescriptor, FieldType};
 use crate::runtime::class_loader::resolve_cp_class;
-use crate::runtime::{Class, FieldIndex, FieldInfo, Variable, VmEnv};
+use crate::runtime::structs::ClinitStatus;
+use crate::runtime::{FieldIndex, FieldInfo, NativeResult, Variable, VmEnv};
 use crate::{
     class::{self, parser},
     runtime,
@@ -56,23 +57,24 @@ impl BootstrapClassLoader {
         &self,
         env: &VmEnv,
         class_name: &str,
-    ) -> Arc<runtime::Class> {
+    ) -> NativeResult<Arc<runtime::Class>> {
         if let Some(class) = self.class_registry.get(class_name) {
-            return Arc::clone(&class);
+            return Ok(Arc::clone(&class));
         }
-        let mut need_init = false;
         let class = match self.class_registry.entry(class_name.to_string()) {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {
-                let class = Arc::new(self.load_class(env, class_name));
+                let class = Arc::new(self.load_class(env, class_name)?);
                 println!("loaded {}", class_name);
                 entry.insert(Arc::clone(&class));
-                need_init = true;
                 class
             }
         };
         // TODO: reentry
-        class.clinit_call.call_once(|| {
+        let clinit_status = class.clinit_call.lock();
+        // TODO: record error
+        if let ClinitStatus::NotInit = clinit_status.get() {
+            clinit_status.set(ClinitStatus::Init);
             // execute clinit
             if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
                 println!("clinit found for {:?}", clinit);
@@ -83,13 +85,15 @@ impl BootstrapClassLoader {
                     &clinit.descriptor.parameters,
                     0,
                 );
-                init_thread.execute();
+                init_thread.execute()?;
             }
-        });
-        class
+        }
+        drop(clinit_status);
+
+        Ok(class)
     }
 
-    fn load_class(&self, env: &VmEnv, name: &str) -> runtime::Class {
+    fn load_class(&self, env: &VmEnv, name: &str) -> NativeResult<runtime::Class> {
         let package = if let Some((pkg, _)) = name.rsplit_once('/') {
             pkg
         } else {
@@ -101,8 +105,8 @@ impl BootstrapClassLoader {
 
         let class_file = &module.get_class_file(&(name.to_string() + ".class"));
         let mut class = runtime::parse_class(class_file);
-        let super_class = self.load_super_class(env, &mut class, class_file.super_class);
-        self.load_interfaces(env, &mut class, &class_file.interfaces);
+        let super_class = self.load_super_class(env, &mut class, class_file.super_class)?;
+        self.load_interfaces(env, &mut class, &class_file.interfaces)?;
 
         let super_var_num = super_class.as_ref().map(|c| c.field_var_size).unwrap_or(0);
         let field_var_size = Self::resolve_this_class_field_ref(
@@ -114,7 +118,7 @@ impl BootstrapClassLoader {
         );
         class.field_var_size = field_var_size;
 
-        class
+        Ok(class)
     }
 
     fn load_super_class(
@@ -122,24 +126,30 @@ impl BootstrapClassLoader {
         env: &VmEnv,
         class: &mut runtime::Class,
         class_index: u16,
-    ) -> Option<Arc<Class>> {
+    ) -> NativeResult<Option<Arc<runtime::Class>>> {
         // java.lang.Object
         if class_index == 0 {
-            return None;
+            return Ok(None);
         }
         let super_class = resolve_cp_class(&class.constant_pool, class_index);
-        let loaded = self.resolve_class(env, &super_class.name);
+        let loaded = self.resolve_class(env, &super_class.name)?;
         super_class.set_class(&loaded);
         class.super_class.replace(Arc::clone(&loaded));
-        Some(loaded)
+        Ok(Some(loaded))
     }
-    fn load_interfaces(&self, env: &VmEnv, class: &mut runtime::Class, interfaces: &[u16]) {
+    fn load_interfaces(
+        &self,
+        env: &VmEnv,
+        class: &mut runtime::Class,
+        interfaces: &[u16],
+    ) -> NativeResult<()> {
         for index in interfaces {
             let interface = resolve_cp_class(&class.constant_pool, *index);
-            let loaded = self.resolve_class(env, &interface.name);
+            let loaded = self.resolve_class(env, &interface.name)?;
             interface.set_class(&loaded);
             class.interfaces.push(loaded);
         }
+        Ok(())
     }
 
     fn resolve_this_class_field_ref(
@@ -234,7 +244,7 @@ impl JModModule {
         let mut module_info_file = archive.by_name("classes/module-info.class").unwrap();
         let module_info = Self::get_class_bytes(&mut module_info_file);
         drop(module_info_file);
-        let (_, module_info) = parser::class_file(&module_info).unwrap();
+        let module_info = parser::class_file(&module_info).unwrap();
         let module_info = runtime::parse_class(&module_info);
 
         // collect class files
@@ -289,7 +299,7 @@ impl ModuleLoader for JModModule {
 
     fn get_class_file(&self, class_name: &str) -> OwnedOrRef<class::Class> {
         let class_file = &self.class_files[class_name];
-        let (_, class_file) = parser::class_file(&class_file).expect(&class_name);
+        let class_file = parser::class_file(&class_file).expect(&class_name);
 
         class_file.into()
     }
@@ -354,12 +364,12 @@ impl ModuleLoader for ClassPathModule {
     fn get_class_file(&self, class_name: &str) -> OwnedOrRef<class::Class> {
         // TODO: unwrap
         let class_file = fs::read(self.base_path.join(class_name)).unwrap();
-        let (_, class_file) = parser::class_file(&class_file).unwrap();
+        let class_file = parser::class_file(&class_file).unwrap();
         class_file.into()
     }
 }
 
-enum OwnedOrRef<'a, T> {
+pub enum OwnedOrRef<'a, T> {
     Owned(T),
     Ref(&'a T),
 }

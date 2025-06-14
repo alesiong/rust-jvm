@@ -1,4 +1,4 @@
-use jvm::runtime::{init_bootstrap_class_loader, register_natives, ClassPathModule, JModModule};
+use jvm::runtime::{ClassPathModule, JModModule, init_bootstrap_class_loader, register_natives};
 use jvm::{
     descriptor,
     runtime::{self},
@@ -31,6 +31,6 @@ fn main() {
     // frame.add_local_int(20);
     // frame.add_local_reference(10);
     // frame.add_local_reference(20);
-    main_thread.execute();
+    main_thread.execute().unwrap();
     // println!("{}", unsafe { v.get_int() });
 }

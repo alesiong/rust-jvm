@@ -50,7 +50,6 @@ impl<'a, 'b> VmEnv<'a, 'b> {
         }
         println!()
     }
-
 }
 
 pub fn init_bootstrap_class_loader(modules: Vec<Box<dyn ModuleLoader + Send + Sync + 'static>>) {

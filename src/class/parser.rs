@@ -11,7 +11,7 @@ use nom::{
     number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u32, u8},
 };
 
-pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
+pub fn class_file(input: &[u8]) -> Result<Class, nom::Err<nom::error::Error<&[u8]>>> {
     let (input, (minor, major)) = parse_header(input)?;
     let (input, constant_pool) = parse_constant_pool(input)?;
 
@@ -25,21 +25,18 @@ pub fn class_file(input: &[u8]) -> IResult<&[u8], Class> {
 
     eof(input)?;
 
-    Ok((
-        input,
-        Class {
-            major_version: major,
-            minor_version: minor,
-            access_flags: ClassAccessFlag::from_bits_retain(access_flags),
-            this_class,
-            super_class,
-            constant_pool,
-            interfaces,
-            fields,
-            methods,
-            attributes,
-        },
-    ))
+    Ok(Class {
+        major_version: major,
+        minor_version: minor,
+        access_flags: ClassAccessFlag::from_bits_retain(access_flags),
+        this_class,
+        super_class,
+        constant_pool,
+        interfaces,
+        fields,
+        methods,
+        attributes,
+    })
 }
 
 fn parse_header(input: &[u8]) -> IResult<&[u8], (u16, u16)> {

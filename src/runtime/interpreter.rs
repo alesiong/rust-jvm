@@ -3,7 +3,8 @@ pub(crate) mod global;
 mod instructions;
 
 use super::{
-    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, FieldIndex, NativeEnv, NativeVariable, VmEnv,
+    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldIndex, NativeEnv,
+    NativeResult, NativeVariable, VmEnv,
 };
 use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
@@ -37,9 +38,7 @@ enum Next {
         class: Arc<Class>,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
-    Exception {
-        message: String,
-    },
+    Exception(Exception),
 }
 
 impl<'t, 'f> InterpreterEnv<'t, 'f> {
@@ -63,7 +62,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 match $expr {
                     ::std::result::Result::Ok(val) => val,
                     ::std::result::Result::Err(err) => {
-                        return err;
+                        return Next::Exception(err);
                     }
                 }
             };
@@ -233,9 +232,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::ARRAYLENGTH => {
                     let arr = unsafe { self.frame.stack.pop().unwrap().reference };
                     if arr == 0 {
-                        return Next::Exception {
-                            message: "NullPointerException".to_string(),
-                        };
+                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
                     }
                     let arr_obj = self.heap.read().unwrap().get(arr);
                     // TODO: get arr type
@@ -453,9 +450,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_int();
                     let b = self.pop_int();
                     if a == 0 {
-                        return Next::Exception {
-                            message: "ArithmeticException".to_string(),
-                        };
+                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
                     }
                     self.push_int(b.wrapping_div(a))
                 }
@@ -463,9 +458,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_long();
                     let b = self.pop_long();
                     if a == 0 {
-                        return Next::Exception {
-                            message: "ArithmeticException".to_string(),
-                        };
+                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
                     }
                     self.push_long(b.wrapping_div(a));
                 }
@@ -484,9 +477,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_int();
                     let b = self.pop_int();
                     if a == 0 {
-                        return Next::Exception {
-                            message: "ArithmeticException".to_string(),
-                        };
+                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
                     }
                     self.frame.stack.push(Variable {
                         int: b.wrapping_rem(a),
@@ -496,9 +487,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_long();
                     let b = self.pop_long();
                     if a == 0 {
-                        return Next::Exception {
-                            message: "ArithmeticException".to_string(),
-                        };
+                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
                     }
                     self.push_long(b.wrapping_rem(a));
                 }
@@ -841,16 +830,16 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                 // oop
                 inst::NEW => {
-                    self.new_object();
+                    except!(self.new_object());
                 }
                 inst::NEWARRAY => {
-                    self.new_array();
+                    except!(self.new_array());
                 }
                 inst::PUTFIELD => {
-                    self.put_field();
+                    except!(self.put_field());
                 }
                 inst::GETFIELD => {
-                    self.get_field();
+                    except!(self.get_field());
                 }
                 inst::GETSTATIC => {
                     self.get_static();
@@ -858,6 +847,21 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::PUTSTATIC => {
                     // FIXME:
                     // self.put_static();
+                }
+                inst::CHECKCAST => {
+                    // TODO: do real check
+                    let cp_index = self.get_u16_args();
+                }
+                inst::INSTANCEOF => {
+                    let cp_index = self.get_u16_args();
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if obj_ref == 0 {
+                        self.push_int(0);
+                    } else {
+                        // TODO: do real check
+                        self.push_int(0);
+                    }
                 }
 
                 // call
@@ -872,7 +876,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    let class_to_invoke = self.resolve_class(&class);
+                    let class_to_invoke = except!(self.resolve_class(&class));
                     return Next::InvokeSpecial {
                         class: class_to_invoke,
                         name_and_type: name_and_type.clone(),
@@ -887,7 +891,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    let class_to_invoke = self.resolve_class(&class);
+                    let class_to_invoke = except!(self.resolve_class(&class));
 
                     return Next::InvokeStatic {
                         class: class_to_invoke,
@@ -895,7 +899,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     };
                 }
                 inst::INVOKENATIVE => {
-                    self.invoke_native();
+                    except!(self.invoke_native());
                 }
 
                 // return
@@ -1077,13 +1081,13 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         self.frame.stack.push(lower);
     }
 
-    fn new_object(&mut self) {
+    fn new_object(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {}", cp_index);
         };
-        let new_class = self.resolve_class(cp_info);
+        let new_class = self.resolve_class(cp_info)?;
 
         let mut fields_types = Vec::new();
 
@@ -1111,14 +1115,14 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             })
         };
         self.frame.stack.push(Variable { reference: id });
+        Ok(())
     }
 
-    fn new_array(&mut self) {
+    fn new_array(&mut self) -> NativeResult<()> {
         let atype = self.get_i8_args();
         let count = self.pop_int();
         if count < 0 {
-            // TODO: exception
-            panic!("NegativeArraySizeException {}", count);
+            return Err(Exception::new("java/lang/NegativeArraySizeException"));
         }
 
         // TODO: build array class
@@ -1145,9 +1149,10 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             _ => panic!("invalid array type {}", atype),
         };
         self.frame.stack.push(Variable { reference: id });
+        Ok(())
     }
 
-    fn put_field(&mut self) {
+    fn put_field(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Fieldref {
             class,
@@ -1174,7 +1179,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
-            // TODO: NPE
+            return Err(Exception::new("java/lang/NullPointerException"));
         }
         let this_obj = self.heap.read().unwrap().get(this);
         unsafe {
@@ -1183,9 +1188,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 this_obj.put_field((*index + 1) as usize, v2);
             }
         }
+
+        Ok(())
     }
 
-    fn get_field(&mut self) {
+    fn get_field(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Fieldref {
             class,
@@ -1201,8 +1208,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         };
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
-            // TODO: NPE
-            panic!("NullPointerException")
+            return Err(Exception::new("java/lang/NullPointerException"));
         }
         let this_obj = self.heap.read().unwrap().get(this);
         self.frame
@@ -1217,6 +1223,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn get_static(&mut self) {
@@ -1324,7 +1331,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         *self.pc = self.pc.wrapping_add_signed((offset - 4) as isize);
     }
 
-    fn invoke_native(&mut self) {
+    fn invoke_native(&mut self) -> NativeResult<()> {
         let class_name = self.frame.class.class_name.to_string();
         let method_name = self.frame.method_name.to_string();
         let param_descriptor = self.frame.param_descriptor.clone();
@@ -1376,7 +1383,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             args,
             heap: self.heap,
             class: Arc::clone(&self.frame.class),
-        });
+        })?;
         // TODO: check actual return type
         let stack = &mut self.frame.stack;
         match ret {
@@ -1391,15 +1398,14 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             Some(NativeVariable::Double(d)) => self.push_double(d),
             Some(NativeVariable::Reference(r)) => stack.push(Variable { reference: r }),
         }
+        Ok(())
     }
 
-    fn arr_load<T: ArrayType>(&mut self) -> Result<T, Next> {
+    fn arr_load<T: ArrayType>(&mut self) -> NativeResult<T> {
         let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
         let arr = unsafe { self.frame.stack.pop().unwrap().reference };
         if arr == 0 {
-            return Err(Next::Exception {
-                message: "NullPointerException".to_string(),
-            });
+            return Err(Exception::new("java/lang/NullPointerException"));
         }
         let arr_object = self.heap.read().unwrap().get(arr);
         // TODO: check for array type
@@ -1407,13 +1413,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         Ok(unsafe { arr_object.get_array_index::<T>(index as _) })
     }
 
-    fn arr_store<T: ArrayType>(&mut self, value: T) -> Result<(), Next> {
+    fn arr_store<T: ArrayType>(&mut self, value: T) -> NativeResult<()> {
         let index = self.pop_int();
         let arr = unsafe { self.frame.stack.pop().unwrap().reference };
         if arr == 0 {
-            return Err(Next::Exception {
-                message: "NullPointerException".to_string(),
-            });
+            return Err(Exception::new("java/lang/NullPointerException"));
         }
         // TODO: check array size
         let arr_obj = self.heap.read().unwrap().get(arr);
@@ -1458,9 +1462,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         *self.pc = start_pc.wrapping_add_signed(offset as isize);
     }
 
-    fn resolve_class(&self, class: &CpClassInfo) -> Arc<Class> {
+    fn resolve_class(&self, class: &CpClassInfo) -> NativeResult<Arc<Class>> {
         if class.name == self.frame.class.class_name {
-            Arc::clone(&self.frame.class)
+            Ok(Arc::clone(&self.frame.class))
         } else {
             let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
             class.get_or_load_class(|| {

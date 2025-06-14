@@ -4,7 +4,7 @@ use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::interpreter::{InterpreterEnv, global};
-use crate::runtime::{CodeAttribute, VmEnv};
+use crate::runtime::{CodeAttribute, NativeResult, VmEnv};
 use crate::{descriptor::FieldType, runtime};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -124,7 +124,8 @@ impl Thread<'_> {
         param_descriptor: &[FieldType],
     ) {
         let loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let main_class = loader.resolve_class(&VmEnv::new(self), main_class);
+        // TODO: unwrap
+        let main_class = loader.resolve_class(&VmEnv::new(self), main_class).unwrap();
         self.new_frame(main_class, method_name, param_descriptor, 0);
     }
     pub fn new_frame(
@@ -265,7 +266,7 @@ impl Thread<'_> {
         self.top_frame.as_deref_mut()
     }
 
-    pub fn execute(&mut self) {
+    pub fn execute(&mut self) -> NativeResult<()> {
         let mut pc = 0;
         while let Some(mut frame) = self.top_frame.take() {
             let mut env = InterpreterEnv::new(
@@ -306,8 +307,9 @@ impl Thread<'_> {
                     }
                     println!();
                 }
-                Next::Exception { message } => {
-                    panic!("exception: {}", message);
+                Next::Exception(exception) => {
+                    // TODO: exception handle inside current/top frame
+                    return Err(exception);
                 }
                 Next::InvokeSpecial {
                     class,
@@ -343,6 +345,7 @@ impl Thread<'_> {
                 }
             }
         }
+        Ok(())
     }
 }
 

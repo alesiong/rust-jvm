@@ -1,34 +1,34 @@
-use nom::{
-    IResult, Parser,
-    bytes::complete::take,
-    error_position,
-    multi::count,
-    number::complete::{be_u16, be_u32, u8},
-};
-use std::collections::HashMap;
-use std::convert::identity;
-use std::sync::atomic::AtomicPtr;
-use std::sync::{Arc, Once, RwLock};
-
 use crate::runtime::{MethodInfo, Module, ModuleExport};
 use crate::{
-    class,
-    consts::FieldAccessFlag,
+    class
+    ,
     descriptor::{
-        self, FieldDescriptor, MethodDescriptor, parse_field_descriptor, parse_method_descriptor,
-        parse_return_type_descriptor,
+        self, parse_field_descriptor, parse_method_descriptor, parse_return_type_descriptor, FieldDescriptor,
+        MethodDescriptor,
     },
     runtime::{
         self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldIndex,
         FieldInfo,
     },
 };
+use nom::{
+    bytes::complete::take, error_position,
+    multi::count,
+    number::complete::{be_u16, be_u32, u8},
+    IResult,
+    Parser,
+};
+use parking_lot::ReentrantMutex;
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::convert::identity;
+use std::sync::Arc;
 
 use super::{ElementValue, LocalVariable};
 
 mod bootstrap;
 use crate::class::JavaStr;
-use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
+use crate::runtime::structs::ClinitStatus;
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -64,7 +64,7 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         constant_pool,
         field_var_size: 0,
         static_fields: vec![],
-        clinit_call: Once::new(),
+        clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::NotInit)),
     }
 }
 

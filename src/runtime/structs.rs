@@ -1,4 +1,5 @@
-use std::sync::{Arc, Once, RwLock};
+use std::cell::Cell;
+use std::sync::{Arc, RwLock};
 
 pub use attributes::*;
 pub use constant_pool::*;
@@ -27,7 +28,13 @@ pub struct Class {
     pub(crate) attributes: Vec<AttributeInfo>,
     pub(crate) field_var_size: usize,
     pub(crate) static_fields: Vec<RwLock<Variable>>,
-    pub(crate) clinit_call: Once,
+    pub(in crate::runtime) clinit_call: parking_lot::ReentrantMutex<Cell<ClinitStatus>>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(in crate::runtime) enum ClinitStatus {
+    NotInit,
+    Init,
 }
 
 impl Class {
@@ -52,7 +59,7 @@ impl Class {
     }
 
     pub(super) fn get_static_field(&self, index: u16) -> Variable {
-        self.static_fields[index as usize].read().unwrap().clone()
+        *self.static_fields[index as usize].read().unwrap()
     }
 }
 
@@ -71,3 +78,29 @@ pub struct MethodInfo {
     pub(crate) descriptor: MethodDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
 }
+
+#[derive(Debug)]
+pub struct Exception {
+    exception_type: String,
+    message: String,
+}
+
+impl Exception {
+    pub(crate) fn new(exception_type: &str) -> Self {
+        Self {
+            exception_type: exception_type.to_string(),
+            message: Default::default(),
+        }
+    }
+}
+
+impl From<nom::Err<nom::error::Error<&[u8]>>> for Exception {
+    fn from(err: nom::Err<nom::error::Error<&[u8]>>) -> Self {
+        Self {
+            exception_type: "java/lang/ClassFormatError".to_string(),
+            message: format!("{:?}", err),
+        }
+    }
+}
+
+pub type NativeResult<T> = ::std::result::Result<T, Exception>;

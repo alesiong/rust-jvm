@@ -1,10 +1,10 @@
 use crate::descriptor::{FieldType, MethodDescriptor};
 use crate::runtime;
-use crate::runtime::Heap;
+use crate::runtime::{Heap, NativeResult};
 use dashmap::DashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-pub type NativeFunction = fn(NativeEnv) -> Option<NativeVariable>;
+pub type NativeFunction = fn(NativeEnv) -> NativeResult<Option<NativeVariable>>;
 
 pub struct NativeEnv {
     pub args: Vec<NativeVariable>,
@@ -39,13 +39,13 @@ pub fn register_natives() {
     );
 }
 
-fn native_object_hash_code(env: NativeEnv) -> Option<NativeVariable> {
+fn native_object_hash_code(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
     let NativeVariable::Reference(rf) = env.args[0] else {
         panic!("native_object_hash_code: invalid args");
     };
-    Some(NativeVariable::Int(rf as i32))
+    Ok(Some(NativeVariable::Int(rf as i32)))
 }
 
-fn native_nop(_: NativeEnv) -> Option<NativeVariable> {
-    None
+fn native_nop(_: NativeEnv) -> NativeResult<Option<NativeVariable>> {
+    Ok(None)
 }
