@@ -1,4 +1,4 @@
-use dashmap::{DashMap, Entry};
+use std::sync::{RwLock, RwLockWriteGuard};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -8,18 +8,16 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use zip::{ZipArchive, read::ZipFile};
+use zip::{read::ZipFile, ZipArchive};
 
-use crate::runtime::FieldResolve;
-use crate::runtime::class_loader::{resolve_field, resolve_static_field};
 use crate::{
-    class::JavaStr,
     class::{self, parser},
-    descriptor::FieldDescriptor,
     runtime,
-    runtime::AttributeInfo,
     runtime::class_loader::resolve_cp_class,
+    runtime::class_loader::resolve_static_field,
     runtime::structs::ClinitStatus,
+    runtime::AttributeInfo,
+    runtime::FieldResolve,
     runtime::{NativeResult, VmEnv},
 };
 
@@ -27,7 +25,7 @@ use crate::{
 pub(in crate::runtime) struct BootstrapClassLoader {
     modules: Vec<Box<dyn ModuleLoader + Send + Sync + 'static>>,
     package_to_module: HashMap<String, usize>,
-    class_registry: DashMap<String, Arc<runtime::Class>>,
+    class_registry: RwLock<HashMap<String, Arc<runtime::Class>>>,
 }
 
 pub trait ModuleLoader: Debug {
@@ -42,7 +40,7 @@ impl BootstrapClassLoader {
         Self {
             modules: vec![],
             package_to_module: HashMap::new(),
-            class_registry: DashMap::new(),
+            class_registry: Default::default(),
         }
     }
     pub fn add_module(&mut self, module: Box<dyn ModuleLoader + Send + Sync + 'static>) {
@@ -58,10 +56,23 @@ impl BootstrapClassLoader {
         env: &VmEnv,
         class_name: &str,
     ) -> NativeResult<Arc<runtime::Class>> {
-        if let Some(class) = self.class_registry.get(class_name) {
-            return Ok(Arc::clone(&class));
+        if let Some(class) = self.class_registry.read().unwrap().get(class_name) {
+            return Ok(Arc::clone(class));
         }
-        let class = self.load_class(env, class_name)?;
+
+        self.resolve_class_inner(env, class_name, &mut self.class_registry.write().unwrap())
+    }
+
+    fn resolve_class_inner(
+        &self,
+        env: &VmEnv,
+        class_name: &str,
+        class_registry: &mut RwLockWriteGuard<HashMap<String, Arc<runtime::Class>>>,
+    ) -> NativeResult<Arc<runtime::Class>> {
+        if let Some(class) = class_registry.get(class_name) {
+            return Ok(Arc::clone(class));
+        }
+        let class = self.load_class(env, class_name, class_registry)?;
         println!("loaded {}", class_name);
 
         let clinit_status = class.clinit_call.lock();
@@ -83,13 +94,17 @@ impl BootstrapClassLoader {
         }
         drop(clinit_status);
 
-        self.class_registry
-            .insert(class_name.to_string(), Arc::clone(&class));
+        class_registry.insert(class_name.to_string(), Arc::clone(&class));
 
         Ok(class)
     }
 
-    fn load_class(&self, env: &VmEnv, name: &str) -> NativeResult<Arc<runtime::Class>> {
+    fn load_class(
+        &self,
+        env: &VmEnv,
+        name: &str,
+        class_registry: &mut RwLockWriteGuard<HashMap<String, Arc<runtime::Class>>>,
+    ) -> NativeResult<Arc<runtime::Class>> {
         let package = if let Some((pkg, _)) = name.rsplit_once('/') {
             pkg
         } else {
@@ -101,8 +116,8 @@ impl BootstrapClassLoader {
 
         let class_file = &module.get_class_file(&(name.to_string() + ".class"));
         let mut class = runtime::parse_class(class_file);
-        self.load_super_class(env, &mut class, class_file.super_class)?;
-        self.load_interfaces(env, &mut class, &class_file.interfaces)?;
+        self.load_super_class(env, &mut class, class_file.super_class, class_registry)?;
+        self.load_interfaces(env, &mut class, &class_file.interfaces, class_registry)?;
         let class = Arc::new(class);
 
         Self::resolve_this_class_field_ref_static(&class);
@@ -115,13 +130,14 @@ impl BootstrapClassLoader {
         env: &VmEnv,
         class: &mut runtime::Class,
         class_index: u16,
+        class_registry: &mut RwLockWriteGuard<HashMap<String, Arc<runtime::Class>>>,
     ) -> NativeResult<()> {
         // java.lang.Object
         if class_index == 0 {
             return Ok(());
         }
         let super_class = resolve_cp_class(&class.constant_pool, class_index);
-        let loaded = self.resolve_class(env, &super_class.name)?;
+        let loaded = self.resolve_class_inner(env, &super_class.name, class_registry)?;
         super_class.set_class(&loaded);
         class.super_class.replace(Arc::clone(&loaded));
         Ok(())
@@ -131,10 +147,11 @@ impl BootstrapClassLoader {
         env: &VmEnv,
         class: &mut runtime::Class,
         interfaces: &[u16],
+        class_registry: &mut RwLockWriteGuard<HashMap<String, Arc<runtime::Class>>>,
     ) -> NativeResult<()> {
         for index in interfaces {
             let interface = resolve_cp_class(&class.constant_pool, *index);
-            let loaded = self.resolve_class(env, &interface.name)?;
+            let loaded = self.resolve_class_inner(env, &interface.name, class_registry)?;
             interface.set_class(&loaded);
             class.interfaces.push(loaded);
         }

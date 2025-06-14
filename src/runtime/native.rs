@@ -1,4 +1,4 @@
-use crate::descriptor::{FieldType, MethodDescriptor};
+use crate::descriptor::FieldType;
 use crate::runtime;
 use crate::runtime::{Heap, NativeResult};
 use dashmap::DashMap;
