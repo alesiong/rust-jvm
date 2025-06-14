@@ -61,16 +61,9 @@ impl BootstrapClassLoader {
         if let Some(class) = self.class_registry.get(class_name) {
             return Ok(Arc::clone(&class));
         }
-        let class = match self.class_registry.entry(class_name.to_string()) {
-            Entry::Occupied(entry) => Arc::clone(entry.get()),
-            Entry::Vacant(entry) => {
-                let class = self.load_class(env, class_name)?;
-                println!("loaded {}", class_name);
-                entry.insert(Arc::clone(&class));
-                class
-            }
-        };
-        // TODO: reentry
+        let class = self.load_class(env, class_name)?;
+        println!("loaded {}", class_name);
+
         let clinit_status = class.clinit_call.lock();
         // TODO: record error
         if let ClinitStatus::NotInit = clinit_status.get() {
@@ -89,6 +82,9 @@ impl BootstrapClassLoader {
             }
         }
         drop(clinit_status);
+
+        self.class_registry
+            .insert(class_name.to_string(), Arc::clone(&class));
 
         Ok(class)
     }
