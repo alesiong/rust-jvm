@@ -3,7 +3,7 @@ use crate::class::JavaStr;
 use crate::descriptor::{FieldDescriptor, ReturnType};
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AttributeInfo {
     Code(CodeAttribute),
     SourceFile(Arc<JavaStr>),
@@ -23,7 +23,7 @@ pub enum AttributeInfo {
     Unknown(Arc<JavaStr>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CodeAttribute {
     pub(crate) max_stack: u16,
     pub(crate) max_locals: u16,
@@ -32,19 +32,19 @@ pub struct CodeAttribute {
     pub(crate) attributes: Vec<AttributeInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Annotation {
     pub(crate) type_descriptor: FieldDescriptor,
     pub(crate) element_value_pairs: Vec<ElementValuePair>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ElementValuePair {
     pub(crate) element_name: Arc<JavaStr>,
     pub(crate) value: ElementValue,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ElementValue {
     Const(Const),
     Enum {
@@ -56,7 +56,7 @@ pub enum ElementValue {
     Array(Vec<ElementValue>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Const {
     Byte(i32),
     Char(i32),
@@ -96,13 +96,13 @@ impl Const {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LineNumberTableItem {
     pub(crate) start_pc: u16,
     pub(crate) line_number: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExceptionTableItem {
     pub(crate) start_pc: u16,
     pub(crate) end_pc: u16,
@@ -110,7 +110,7 @@ pub struct ExceptionTableItem {
     pub(crate) catch_type: Option<CpClassInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalVariable {
     pub(crate) start_pc: u16,
     pub(crate) length: u16,
@@ -119,17 +119,17 @@ pub struct LocalVariable {
     pub(crate) index: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StackMapFrame {
     // TODO:
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Module {
     pub(crate) exports: Vec<ModuleExport>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleExport {
     pub(crate) exports: Arc<JavaStr>,
     pub(crate) exports_flags: u16,

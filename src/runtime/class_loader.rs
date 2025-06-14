@@ -820,5 +820,17 @@ pub(in crate::runtime) fn resolve_field(
     if is_static {
         return resolve_static_field(class, field_ref, false);
     }
-    None
+    let index = class
+        .instance_fields_info
+        .iter()
+        .find(|f| {
+            f.name == field_ref.name_and_type.name
+                && f.descriptor == field_ref.name_and_type.descriptor
+        })?
+        .index;
+
+    Some(FieldResolve::OtherClass {
+        class: Arc::clone(class),
+        index,
+    })
 }

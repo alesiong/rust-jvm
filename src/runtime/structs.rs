@@ -67,7 +67,7 @@ impl Class {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldInfo {
     pub(crate) access_flags: FieldAccessFlag,
     pub(crate) name: Arc<JavaStr>,

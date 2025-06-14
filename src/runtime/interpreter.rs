@@ -4,9 +4,9 @@ mod instructions;
 
 use super::{
     ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
-    NativeResult, NativeVariable, VmEnv,
+    NativeResult, NativeVariable, Object, VmEnv,
 };
-use crate::descriptor::{self, FieldType, MethodDescriptor};
+use crate::descriptor::{self, FieldDescriptor, FieldType, MethodDescriptor};
 use crate::runtime::Heap;
 use crate::runtime::class_loader::resolve_field;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
@@ -1099,20 +1099,16 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let mut heap = self.heap.write().unwrap();
         let id = unsafe {
-            heap.allocate_object(
-                new_class.instance_fields_info.len(),
-                Arc::clone(&new_class),
-                |i, v| {
-                    use FieldType::*;
-                    let var = match fields_types[i].0 {
-                        Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
-                        Float | Double => Variable { float: 0.0 },
-                        Object(_) | Array(_) => Variable { reference: 0 },
-                    };
+            heap.allocate_object(fields_types.len(), Arc::clone(&new_class), |i, v| {
+                use FieldType::*;
+                let var = match fields_types[i].0 {
+                    Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
+                    Float | Double => Variable { float: 0.0 },
+                    Object(_) | Array(_) => Variable { reference: 0 },
+                };
 
-                    v.write(var);
-                },
-            )
+                v.write(var);
+            })
         };
         self.frame.stack.push(Variable { reference: id });
         Ok(())
@@ -1153,40 +1149,25 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     fn put_field(&mut self) -> NativeResult<()> {
-        let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Fieldref(runtime::Fieldref {
-            name_and_type,
-            resolve,
-            ..
-        }) = self.frame.class.get_constant(cp_index)
-        else {
-            panic!("invalid constant type {}", cp_index);
-        };
-        // TODO: resolve other classes
-        let FieldResolve::InThisClass(index) = resolve.get().unwrap() else {
-            panic!("invalid field resolve type");
-        };
-
+        let (index, is_long) = self.resolve_instance_field()?;
         let v1;
         let mut v2 = None;
-        match name_and_type.descriptor.0 {
-            descriptor::FieldType::Long | descriptor::FieldType::Double => {
-                v2 = Some(self.frame.stack.pop().unwrap());
-                v1 = self.frame.stack.pop().unwrap();
-            }
-            _ => {
-                v1 = self.frame.stack.pop().unwrap();
-            }
+        if is_long {
+            v2 = Some(self.frame.stack.pop().unwrap());
+            v1 = self.frame.stack.pop().unwrap();
+        } else {
+            v1 = self.frame.stack.pop().unwrap();
         }
+
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
             return Err(Exception::new("java/lang/NullPointerException"));
         }
         let this_obj = self.heap.read().unwrap().get(this);
         unsafe {
-            this_obj.put_field(*index as usize, v1);
+            this_obj.put_field(index as usize, v1);
             if let Some(v2) = v2 {
-                this_obj.put_field((*index + 1) as usize, v2);
+                this_obj.put_field((index + 1) as usize, v2);
             }
         }
 
@@ -1194,40 +1175,27 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     fn get_field(&mut self) -> NativeResult<()> {
-        let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Fieldref(runtime::Fieldref {
-            name_and_type,
-            resolve,
-            ..
-        }) = self.frame.class.get_constant(cp_index)
-        else {
-            panic!("invalid constant type {}", cp_index);
-        };
-        // TODO: resolve other classes
-        let FieldResolve::InThisClass(index) = resolve.get().unwrap() else {
-            panic!("invalid field resolve type");
-        };
+        let (index, is_long) = self.resolve_instance_field()?;
+
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
             return Err(Exception::new("java/lang/NullPointerException"));
         }
         let this_obj = self.heap.read().unwrap().get(this);
+
         self.frame
             .stack
-            .push(unsafe { this_obj.get_field(*index as usize) });
+            .push(unsafe { this_obj.get_field(index as usize) });
 
-        match name_and_type.descriptor.0 {
-            descriptor::FieldType::Long | descriptor::FieldType::Double => {
-                self.frame
-                    .stack
-                    .push(unsafe { this_obj.get_field((*index + 1) as usize) });
-            }
-            _ => {}
+        if is_long {
+            self.frame
+                .stack
+                .push(unsafe { this_obj.get_field((index + 1) as usize) });
         }
         Ok(())
     }
 
-    fn get_static(&mut self) -> NativeResult<()> {
+    fn resolve_instance_field(&mut self) -> NativeResult<(u16, bool)> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Fieldref(
             field_ref @ runtime::Fieldref {
@@ -1240,16 +1208,16 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             panic!("invalid constant type {}", cp_index);
         };
 
-        let resolve = resolve.get_or_try_init(|| self.resolve_field(field_ref, true))?;
-        let (class, &index) = match resolve {
-            FieldResolve::InThisClass(index) => (&self.frame.class, index),
-            FieldResolve::OtherClass { class, index } => (class, index),
-        };
+        let resolve = resolve.get_or_try_init(|| self.resolve_field(field_ref, false))?;
+        let index = resolve.get_index();
+        let is_long = name_and_type.descriptor.0.is_long();
 
-        let is_long = matches!(
-            name_and_type.descriptor.0,
-            descriptor::FieldType::Long | descriptor::FieldType::Double
-        );
+        Ok((index, is_long))
+    }
+
+    fn get_static(&mut self) -> NativeResult<()> {
+        let (class, index, is_long) = self.resolve_static_field()?;
+
         self.frame.stack.push(class.get_static_field(index));
         if is_long {
             self.frame.stack.push(class.get_static_field(index + 1));
@@ -1259,6 +1227,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     fn put_static(&mut self) -> NativeResult<()> {
+        let (class, index, is_long) = self.resolve_static_field()?;
+
+        if is_long {
+            class.set_static_field(index + 1, self.frame.stack.pop().unwrap());
+            class.set_static_field(index, self.frame.stack.pop().unwrap());
+        } else {
+            class.set_static_field(index, self.frame.stack.pop().unwrap());
+        }
+        Ok(())
+    }
+
+    fn resolve_static_field(&mut self) -> Result<(Arc<Class>, u16, bool), Exception> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Fieldref(
             field_ref @ runtime::Fieldref {
@@ -1281,13 +1261,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             name_and_type.descriptor.0,
             descriptor::FieldType::Long | descriptor::FieldType::Double
         );
-        if is_long {
-            class.set_static_field(index + 1, self.frame.stack.pop().unwrap());
-            class.set_static_field(index, self.frame.stack.pop().unwrap());
-        } else {
-            class.set_static_field(index, self.frame.stack.pop().unwrap());
-        }
-        Ok(())
+        Ok((Arc::clone(class), index, is_long))
     }
 
     #[inline]

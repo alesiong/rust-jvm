@@ -88,3 +88,12 @@ pub(crate) enum FieldResolve {
     InThisClass(u16),
     OtherClass { class: Arc<Class>, index: u16 },
 }
+
+impl FieldResolve {
+    pub(crate) fn get_index(&self) -> u16 {
+        match self {
+            FieldResolve::InThisClass(index) => *index,
+            FieldResolve::OtherClass { index, .. } => *index,
+        }
+    }
+}
