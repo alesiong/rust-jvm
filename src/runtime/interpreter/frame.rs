@@ -295,12 +295,12 @@ impl Thread<'_> {
                         }
                     }
                     print!(
-                        "return from {}.{}",
-                        frame.class.class_name, frame.method_name
+                        "return from {}.{}({:?})",
+                        frame.class.class_name, frame.method_name, frame.param_descriptor
                     );
                     if !is_void {
                         if is_long {
-                            print!(" with {}", unsafe { Variable::get_long(v1, v2) });
+                            print!(" with {}L", unsafe { Variable::get_long(v1, v2) });
                         } else {
                             print!(" with {}", unsafe { v1.int });
                         }

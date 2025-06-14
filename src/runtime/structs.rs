@@ -23,10 +23,10 @@ pub struct Class {
     pub(crate) class_name: Arc<str>,
     pub(crate) super_class: Option<Arc<Class>>,
     pub(crate) interfaces: Vec<Arc<Class>>,
-    pub(crate) fields: Vec<FieldInfo>,
+    pub(crate) static_fields_info: Vec<FieldInfo>,
+    pub(crate) instance_fields_info: Vec<FieldInfo>,
     pub(crate) methods: Vec<MethodInfo>,
     pub(crate) attributes: Vec<AttributeInfo>,
-    pub(crate) field_var_size: usize,
     pub(crate) static_fields: Vec<RwLock<Variable>>,
     pub(in crate::runtime) clinit_call: parking_lot::ReentrantMutex<Cell<ClinitStatus>>,
 }
@@ -61,6 +61,10 @@ impl Class {
     pub(super) fn get_static_field(&self, index: u16) -> Variable {
         *self.static_fields[index as usize].read().unwrap()
     }
+
+    pub(super) fn set_static_field(&self, index: u16, value: Variable) {
+        *self.static_fields[index as usize].write().unwrap() = value;
+    }
 }
 
 #[derive(Debug)]
@@ -69,6 +73,7 @@ pub struct FieldInfo {
     pub(crate) name: Arc<JavaStr>,
     pub(crate) descriptor: FieldDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
+    pub(crate) index: u16,
 }
 
 #[derive(Debug)]

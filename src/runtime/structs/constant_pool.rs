@@ -16,11 +16,7 @@ pub enum ConstantPoolInfo {
     Double(f64),
     Class(CpClassInfo),
     String(Arc<JavaStr>),
-    Fieldref {
-        class: CpClassInfo,
-        name_and_type: CpNameAndTypeInfo<FieldDescriptor>,
-        field_index: FieldIndex,
-    },
+    Fieldref(Fieldref),
     Methodref {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
@@ -43,7 +39,7 @@ pub enum ConstantPoolInfo {
 pub struct CpClassInfo {
     pub(crate) name: Arc<str>,
     // TODO: array
-    pub(crate) class: Arc<once_cell::sync::OnceCell<Arc<Class>>>,
+    pub(crate) class: once_cell::sync::OnceCell<Arc<Class>>,
 }
 
 impl CpClassInfo {
@@ -74,10 +70,21 @@ pub struct CpNameAndTypeInfo<T> {
     pub(crate) descriptor: T,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum FieldIndex {
-    Unresolved,
-    NotThisClass,
-    Instance(u16),
-    Static(u16),
+#[derive(Debug, Clone)]
+pub struct Fieldref {
+    pub(crate) class_name: Arc<str>,
+    pub(crate) name_and_type: CpNameAndTypeInfo<FieldDescriptor>,
+    pub(crate) resolve: once_cell::sync::OnceCell<FieldResolve>,
+}
+
+impl Fieldref {
+    pub(crate) fn is_resolved(&self) -> bool {
+        self.resolve.get().is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FieldResolve {
+    InThisClass(u16),
+    OtherClass { class: Arc<Class>, index: u16 },
 }

@@ -1,5 +1,4 @@
 use dashmap::{DashMap, Entry};
-use std::sync::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -9,18 +8,19 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use zip::{read::ZipFile, ZipArchive};
+use zip::{ZipArchive, read::ZipFile};
 
-use crate::class::JavaStr;
-use crate::consts::FieldAccessFlag;
-use crate::descriptor::{FieldDescriptor, FieldType};
-use crate::runtime::class_loader::resolve_cp_class;
-use crate::runtime::structs::ClinitStatus;
-use crate::runtime::{FieldIndex, FieldInfo, NativeResult, Variable, VmEnv};
+use crate::runtime::FieldResolve;
+use crate::runtime::class_loader::{resolve_field, resolve_static_field};
 use crate::{
+    class::JavaStr,
     class::{self, parser},
+    descriptor::FieldDescriptor,
     runtime,
     runtime::AttributeInfo,
+    runtime::class_loader::resolve_cp_class,
+    runtime::structs::ClinitStatus,
+    runtime::{NativeResult, VmEnv},
 };
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ impl BootstrapClassLoader {
         let class = match self.class_registry.entry(class_name.to_string()) {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {
-                let class = Arc::new(self.load_class(env, class_name)?);
+                let class = self.load_class(env, class_name)?;
                 println!("loaded {}", class_name);
                 entry.insert(Arc::clone(&class));
                 class
@@ -93,7 +93,7 @@ impl BootstrapClassLoader {
         Ok(class)
     }
 
-    fn load_class(&self, env: &VmEnv, name: &str) -> NativeResult<runtime::Class> {
+    fn load_class(&self, env: &VmEnv, name: &str) -> NativeResult<Arc<runtime::Class>> {
         let package = if let Some((pkg, _)) = name.rsplit_once('/') {
             pkg
         } else {
@@ -105,18 +105,11 @@ impl BootstrapClassLoader {
 
         let class_file = &module.get_class_file(&(name.to_string() + ".class"));
         let mut class = runtime::parse_class(class_file);
-        let super_class = self.load_super_class(env, &mut class, class_file.super_class)?;
+        self.load_super_class(env, &mut class, class_file.super_class)?;
         self.load_interfaces(env, &mut class, &class_file.interfaces)?;
+        let class = Arc::new(class);
 
-        let super_var_num = super_class.as_ref().map(|c| c.field_var_size).unwrap_or(0);
-        let field_var_size = Self::resolve_this_class_field_ref(
-            &class.fields,
-            &mut class.constant_pool,
-            &class.class_name,
-            super_var_num,
-            &mut class.static_fields,
-        );
-        class.field_var_size = field_var_size;
+        Self::resolve_this_class_field_ref_static(&class);
 
         Ok(class)
     }
@@ -126,16 +119,16 @@ impl BootstrapClassLoader {
         env: &VmEnv,
         class: &mut runtime::Class,
         class_index: u16,
-    ) -> NativeResult<Option<Arc<runtime::Class>>> {
+    ) -> NativeResult<()> {
         // java.lang.Object
         if class_index == 0 {
-            return Ok(None);
+            return Ok(());
         }
         let super_class = resolve_cp_class(&class.constant_pool, class_index);
         let loaded = self.resolve_class(env, &super_class.name)?;
         super_class.set_class(&loaded);
         class.super_class.replace(Arc::clone(&loaded));
-        Ok(Some(loaded))
+        Ok(())
     }
     fn load_interfaces(
         &self,
@@ -152,73 +145,97 @@ impl BootstrapClassLoader {
         Ok(())
     }
 
-    fn resolve_this_class_field_ref(
-        fields: &[FieldInfo],
-        cp: &mut [runtime::ConstantPoolInfo],
-        class_name: &str,
-        mut instance_size: usize,
-        static_fields: &mut Vec<RwLock<Variable>>,
-    ) -> usize {
-        let mut field_map: HashMap<(&JavaStr, &FieldDescriptor), FieldIndex> = HashMap::new();
-        for field in fields {
-            if field.access_flags.contains(FieldAccessFlag::STATIC) {
-                field_map.insert(
-                    (&field.name, &field.descriptor),
-                    FieldIndex::Static(static_fields.len() as u16),
-                );
-                match field.descriptor.0 {
-                    FieldType::Byte
-                    | FieldType::Char
-                    | FieldType::Short
-                    | FieldType::Int
-                    | FieldType::Boolean => static_fields.push(RwLock::new(Variable { int: 0 })),
-                    FieldType::Double => {
-                        let (a, b) = Variable::put_double(0.0);
-                        static_fields.push(RwLock::new(a));
-                        static_fields.push(RwLock::new(b));
-                    }
-                    FieldType::Float => static_fields.push(RwLock::new(Variable { float: 0.0 })),
-                    FieldType::Long => {
-                        let (a, b) = Variable::put_long(0);
-                        static_fields.push(RwLock::new(a));
-                        static_fields.push(RwLock::new(b));
-                    }
-                    FieldType::Object(_) | FieldType::Array(_) => {
-                        static_fields.push(RwLock::new(Variable { reference: 0 }))
-                    }
-                }
+    // fn resolve_this_class_field_ref(
+    //     fields: &[FieldInfo],
+    //     cp: &mut [runtime::ConstantPoolInfo],
+    //     class_name: &str,
+    //     mut instance_size: usize,
+    //     static_fields: &mut Vec<RwLock<Variable>>,
+    // ) -> usize {
+    //     let mut field_map: HashMap<(&JavaStr, &FieldDescriptor), FieldIndex> = HashMap::new();
+    //     for field in fields {
+    //         if field.access_flags.contains(FieldAccessFlag::STATIC) {
+    //         } else {
+    //             field_map.insert(
+    //                 (&field.name, &field.descriptor),
+    //                 FieldIndex::Instance(instance_size as u16),
+    //             );
+    //             let size = if field.descriptor.0.is_long() { 2 } else { 1 };
+    //             instance_size += size;
+    //         }
+    //     }
+    //     for cp_in_file in cp.iter_mut() {
+    //         match cp_in_file {
+    //             runtime::ConstantPoolInfo::Fieldref {
+    //                 class,
+    //                 name_and_type,
+    //                 field_index,
+    //             } => {
+    //                 if class.name.as_ref() != class_name {
+    //                     // *field_index = FieldIndex::NotThisClass;
+    //                     continue;
+    //                 }
+    //                 let index =
+    //                     field_map.get(&(name_and_type.name.as_ref(), &name_and_type.descriptor));
+    //                 if let Some(index) = index {
+    //                     *field_index = *index;
+    //                 } else {
+    //                     // *field_index = FieldIndex::NotThisClass;
+    //                 }
+    //             }
+    //             _ => continue,
+    //         }
+    //     }
+    //     instance_size
+    // }
+
+    fn resolve_this_class_field_ref_static(class: &Arc<runtime::Class>) {
+        let field_map: HashMap<_, _> = class
+            .static_fields_info
+            .iter()
+            .map(|field| ((field.name.as_ref(), &field.descriptor), field.index))
+            .collect();
+
+        // for filter
+        let instance_field: HashSet<_> = class
+            .instance_fields_info
+            .iter()
+            .map(|field| (field.name.as_ref(), &field.descriptor))
+            .collect();
+
+        for cp_in_file in &class.constant_pool {
+            let runtime::ConstantPoolInfo::Fieldref(field_ref) = cp_in_file else {
+                continue;
+            };
+
+            if field_ref.class_name != class.class_name {
+                // not in this class, to be resolved at runtime
+                continue;
+            }
+            let name_and_type = &field_ref.name_and_type;
+
+            let key = &(name_and_type.name.as_ref(), &name_and_type.descriptor);
+            if instance_field.contains(key) {
+                // ignore instance field
+                continue;
+            }
+
+            let index = field_map.get(key);
+            if let Some(&index) = index {
+                // inside this class
+                field_ref
+                    .resolve
+                    .set(FieldResolve::InThisClass(index))
+                    .expect("must be empty now");
             } else {
-                field_map.insert(
-                    (&field.name, &field.descriptor),
-                    FieldIndex::Instance(instance_size as u16),
-                );
-                let size = if field.descriptor.0.is_long() { 2 } else { 1 };
-                instance_size += size;
+                let Some(resolve) = resolve_static_field(class, field_ref, true) else {
+                    // instance fields from super class must be put into instance_field_info before this function
+                    // TODO: exception ?
+                    panic!("static field cannot be resolved");
+                };
+                field_ref.resolve.set(resolve).expect("must be empty now");
             }
         }
-        for cp_in_file in cp.iter_mut() {
-            match cp_in_file {
-                runtime::ConstantPoolInfo::Fieldref {
-                    class,
-                    name_and_type,
-                    field_index,
-                } => {
-                    if class.name.as_ref() != class_name {
-                        *field_index = FieldIndex::NotThisClass;
-                        continue;
-                    }
-                    let index =
-                        field_map.get(&(name_and_type.name.as_ref(), &name_and_type.descriptor));
-                    if let Some(index) = index {
-                        *field_index = *index;
-                    } else {
-                        *field_index = FieldIndex::NotThisClass;
-                    }
-                }
-                _ => continue,
-            }
-        }
-        instance_size
     }
 }
 

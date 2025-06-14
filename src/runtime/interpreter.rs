@@ -3,12 +3,12 @@ pub(crate) mod global;
 mod instructions;
 
 use super::{
-    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldIndex, NativeEnv,
+    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
     NativeResult, NativeVariable, VmEnv,
 };
-use crate::consts::FieldAccessFlag;
 use crate::descriptor::{self, FieldType, MethodDescriptor};
 use crate::runtime::Heap;
+use crate::runtime::class_loader::resolve_field;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 use crate::runtime::native::NATIVE_FUNCTIONS;
 use crate::runtime::{self};
@@ -842,11 +842,10 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     except!(self.get_field());
                 }
                 inst::GETSTATIC => {
-                    self.get_static();
+                    except!(self.get_static());
                 }
                 inst::PUTSTATIC => {
-                    // FIXME:
-                    // self.put_static();
+                    except!(self.put_static());
                 }
                 inst::CHECKCAST => {
                     // TODO: do real check
@@ -1091,10 +1090,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let mut fields_types = Vec::new();
 
-        for f in &new_class.fields {
-            if f.access_flags.contains(FieldAccessFlag::STATIC) {
-                continue;
-            }
+        for f in &new_class.instance_fields_info {
             if f.descriptor.0.is_long() {
                 fields_types.push(&f.descriptor);
             }
@@ -1103,16 +1099,20 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let mut heap = self.heap.write().unwrap();
         let id = unsafe {
-            heap.allocate_object(new_class.field_var_size, Arc::clone(&new_class), |i, v| {
-                use FieldType::*;
-                let var = match fields_types[i].0 {
-                    Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
-                    Float | Double => Variable { float: 0.0 },
-                    Object(_) | Array(_) => Variable { reference: 0 },
-                };
+            heap.allocate_object(
+                new_class.instance_fields_info.len(),
+                Arc::clone(&new_class),
+                |i, v| {
+                    use FieldType::*;
+                    let var = match fields_types[i].0 {
+                        Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
+                        Float | Double => Variable { float: 0.0 },
+                        Object(_) | Array(_) => Variable { reference: 0 },
+                    };
 
-                v.write(var);
-            })
+                    v.write(var);
+                },
+            )
         };
         self.frame.stack.push(Variable { reference: id });
         Ok(())
@@ -1154,18 +1154,19 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn put_field(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Fieldref {
-            class,
+        let runtime::ConstantPoolInfo::Fieldref(runtime::Fieldref {
             name_and_type,
-            field_index,
-        } = self.frame.class.get_constant(cp_index)
+            resolve,
+            ..
+        }) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {}", cp_index);
         };
         // TODO: resolve other classes
-        let runtime::FieldIndex::Instance(index) = field_index else {
-            panic!("invalid field type");
+        let FieldResolve::InThisClass(index) = resolve.get().unwrap() else {
+            panic!("invalid field resolve type");
         };
+
         let v1;
         let mut v2 = None;
         match name_and_type.descriptor.0 {
@@ -1194,17 +1195,17 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn get_field(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Fieldref {
-            class,
+        let runtime::ConstantPoolInfo::Fieldref(runtime::Fieldref {
             name_and_type,
-            field_index,
-        } = self.frame.class.get_constant(cp_index)
+            resolve,
+            ..
+        }) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {}", cp_index);
         };
         // TODO: resolve other classes
-        let runtime::FieldIndex::Instance(index) = field_index else {
-            panic!("invalid field type");
+        let FieldResolve::InThisClass(index) = resolve.get().unwrap() else {
+            panic!("invalid field resolve type");
         };
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
@@ -1226,39 +1227,67 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         Ok(())
     }
 
-    fn get_static(&mut self) {
+    fn get_static(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Fieldref {
-            class,
-            name_and_type,
-            field_index,
-        } = self.frame.class.get_constant(cp_index)
+        let runtime::ConstantPoolInfo::Fieldref(
+            field_ref @ runtime::Fieldref {
+                name_and_type,
+                resolve,
+                ..
+            },
+        ) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {}", cp_index);
+        };
+
+        let resolve = resolve.get_or_try_init(|| self.resolve_field(field_ref, true))?;
+        let (class, &index) = match resolve {
+            FieldResolve::InThisClass(index) => (&self.frame.class, index),
+            FieldResolve::OtherClass { class, index } => (class, index),
         };
 
         let is_long = matches!(
             name_and_type.descriptor.0,
             descriptor::FieldType::Long | descriptor::FieldType::Double
         );
-        let class = self.resolve_class(class);
-
-        match field_index {
-            FieldIndex::NotThisClass => {
-                // let class = self.resolve_class(class);
-            }
-            FieldIndex::Static(index) => {
-                self.frame
-                    .stack
-                    .push(self.frame.class.get_static_field(*index));
-                if is_long {
-                    self.frame
-                        .stack
-                        .push(self.frame.class.get_static_field(*index + 1));
-                }
-            }
-            _ => panic!("invalid field type {:?}", field_index),
+        self.frame.stack.push(class.get_static_field(index));
+        if is_long {
+            self.frame.stack.push(class.get_static_field(index + 1));
         }
+
+        Ok(())
+    }
+
+    fn put_static(&mut self) -> NativeResult<()> {
+        let cp_index = self.get_u16_args();
+        let runtime::ConstantPoolInfo::Fieldref(
+            field_ref @ runtime::Fieldref {
+                name_and_type,
+                resolve,
+                ..
+            },
+        ) = self.frame.class.get_constant(cp_index)
+        else {
+            panic!("invalid constant type {}", cp_index);
+        };
+
+        let resolve = resolve.get_or_try_init(|| self.resolve_field(field_ref, true))?;
+        let (class, &index) = match resolve {
+            FieldResolve::InThisClass(index) => (&self.frame.class, index),
+            FieldResolve::OtherClass { class, index } => (class, index),
+        };
+
+        let is_long = matches!(
+            name_and_type.descriptor.0,
+            descriptor::FieldType::Long | descriptor::FieldType::Double
+        );
+        if is_long {
+            class.set_static_field(index + 1, self.frame.stack.pop().unwrap());
+            class.set_static_field(index, self.frame.stack.pop().unwrap());
+        } else {
+            class.set_static_field(index, self.frame.stack.pop().unwrap());
+        }
+        Ok(())
     }
 
     #[inline]
@@ -1474,5 +1503,19 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 )
             })
         }
+    }
+
+    fn resolve_field(
+        &self,
+        field_ref: &runtime::Fieldref,
+        is_static: bool,
+    ) -> NativeResult<FieldResolve> {
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let class = bootstrap_class_loader.resolve_class(
+            &VmEnv::with_cur_frame(&self.next_native_thread, self.frame),
+            &field_ref.class_name,
+        )?;
+        // TODO: maybe exception
+        Ok(resolve_field(&class, field_ref, is_static).expect("field cannot be resolved"))
     }
 }

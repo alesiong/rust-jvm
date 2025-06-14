@@ -1,45 +1,46 @@
-use crate::runtime::{MethodInfo, Module, ModuleExport};
+use crate::runtime::{FieldResolve, Fieldref, MethodInfo, Module, ModuleExport, Variable};
 use crate::{
-    class
-    ,
+    class,
     descriptor::{
-        self, parse_field_descriptor, parse_method_descriptor, parse_return_type_descriptor, FieldDescriptor,
-        MethodDescriptor,
+        self, FieldDescriptor, MethodDescriptor, parse_field_descriptor, parse_method_descriptor,
+        parse_return_type_descriptor,
     },
     runtime::{
-        self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldIndex,
-        FieldInfo,
+        self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldInfo,
     },
 };
 use nom::{
-    bytes::complete::take, error_position,
+    IResult, Parser,
+    bytes::complete::take,
+    error_position,
     multi::count,
     number::complete::{be_u16, be_u32, u8},
-    IResult,
-    Parser,
 };
 use parking_lot::ReentrantMutex;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::convert::identity;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::{ElementValue, LocalVariable};
 
 mod bootstrap;
 use crate::class::JavaStr;
+use crate::consts::FieldAccessFlag;
+use crate::descriptor::FieldType;
 use crate::runtime::structs::ClinitStatus;
+
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
 pub fn parse_class(class_file: &class::Class) -> runtime::Class {
     let constant_pool = parse_constant_pool(&class_file.constant_pool);
 
-    let fields: Vec<_> = class_file
+    let (mut static_fields, instance_fields): (Vec<_>, Vec<_>) = class_file
         .fields
         .iter()
         .map(|f| parse_field(&constant_pool, f))
-        .collect();
+        .partition(|f| f.access_flags.contains(FieldAccessFlag::STATIC));
     let methods: Vec<MethodInfo> = class_file
         .methods
         .iter()
@@ -53,17 +54,19 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
 
     let class_name = Arc::clone(&resolve_cp_class(&constant_pool, class_file.this_class).name);
 
+    let static_fields_var = allocate_static_fields(&mut static_fields);
+
     runtime::Class {
         access_flags: class_file.access_flags,
         class_name: Arc::clone(&class_name),
         super_class: None,
         interfaces: Vec::with_capacity(class_file.interfaces.len()),
-        fields,
+        static_fields_info: static_fields,
+        instance_fields_info: instance_fields,
         methods,
         attributes,
         constant_pool,
-        field_var_size: 0,
-        static_fields: vec![],
+        static_fields: static_fields_var,
         clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::NotInit)),
     }
 }
@@ -101,11 +104,11 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::Fieldref {
                 class_index,
                 name_and_type_index,
-            } => Cpi::Fieldref {
-                class: class_info_map[class_index].clone(),
+            } => Cpi::Fieldref(Fieldref {
+                class_name: Arc::clone(&class_info_map[class_index].name),
                 name_and_type: resolve_cp_name_and_type_field(cp, *name_and_type_index),
-                field_index: FieldIndex::Unresolved,
-            },
+                resolve: Default::default(),
+            }),
             class::ConstantPoolInfo::Methodref {
                 class_index,
                 name_and_type_index,
@@ -151,6 +154,7 @@ fn parse_field(cp: &[runtime::ConstantPoolInfo], field: &class::FieldInfo) -> ru
         name: resolve_runtime_cp_utf8(cp, field.name_index),
         descriptor,
         attributes: field.attributes.iter().map(convert_attribute(cp)).collect(),
+        index: 0,
     }
 }
 
@@ -743,4 +747,78 @@ fn parse_local_variable(
             },
         ))
     }
+}
+
+fn allocate_static_fields(static_fields_info: &mut [FieldInfo]) -> Vec<RwLock<Variable>> {
+    let mut static_fields = Vec::with_capacity(static_fields_info.len());
+    for field in static_fields_info {
+        field.index = static_fields.len() as _;
+        match field.descriptor.0 {
+            FieldType::Byte
+            | FieldType::Char
+            | FieldType::Short
+            | FieldType::Int
+            | FieldType::Boolean => static_fields.push(RwLock::new(Variable { int: 0 })),
+            FieldType::Double => {
+                let (a, b) = Variable::put_double(0.0);
+                static_fields.push(RwLock::new(a));
+                static_fields.push(RwLock::new(b));
+            }
+            FieldType::Float => static_fields.push(RwLock::new(Variable { float: 0.0 })),
+            FieldType::Long => {
+                let (a, b) = Variable::put_long(0);
+                static_fields.push(RwLock::new(a));
+                static_fields.push(RwLock::new(b));
+            }
+            FieldType::Object(_) | FieldType::Array(_) => {
+                static_fields.push(RwLock::new(Variable { reference: 0 }))
+            }
+        }
+    }
+    static_fields
+}
+
+fn resolve_static_field(
+    class: &Arc<runtime::Class>,
+    field_ref: &runtime::Fieldref,
+    skip_this: bool,
+) -> Option<FieldResolve> {
+    if !skip_this {
+        let name_and_type = &field_ref.name_and_type;
+        for field in &class.static_fields_info {
+            if !(field.name == name_and_type.name && field.descriptor == name_and_type.descriptor) {
+                continue;
+            }
+            println!(
+                "loaded field from other class: {} from {}.{}",
+                field_ref.name_and_type.name, class.class_name, field.index
+            );
+            return Some(FieldResolve::OtherClass {
+                class: Arc::clone(class),
+                index: field.index,
+            });
+        }
+    }
+
+    // not found, go further
+    for interface in &class.interfaces {
+        if let Some(resolve) = resolve_static_field(interface, field_ref, false) {
+            return Some(resolve);
+        }
+    }
+    if let Some(ref super_class) = class.super_class {
+        return resolve_static_field(super_class, field_ref, false);
+    }
+    None
+}
+
+pub(in crate::runtime) fn resolve_field(
+    class: &Arc<runtime::Class>,
+    field_ref: &runtime::Fieldref,
+    is_static: bool,
+) -> Option<FieldResolve> {
+    if is_static {
+        return resolve_static_field(class, field_ref, false);
+    }
+    None
 }
