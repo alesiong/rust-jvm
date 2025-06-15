@@ -1,11 +1,11 @@
 use nom::{
-    branch::alt, bytes::complete::take_until,
+    IResult, Parser,
+    branch::alt,
+    bytes::complete::take_until,
     character::complete::{char, one_of},
     combinator::{eof, map},
     multi::many0,
     sequence::delimited,
-    IResult,
-    Parser,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -36,6 +36,20 @@ pub enum FieldType {
 impl FieldType {
     pub fn is_long(&self) -> bool {
         matches!(self, FieldType::Long | FieldType::Double)
+    }
+
+    pub fn is_primitive(&self) -> bool {
+        matches!(
+            self,
+            FieldType::Byte
+                | FieldType::Char
+                | FieldType::Double
+                | FieldType::Float
+                | FieldType::Int
+                | FieldType::Long
+                | FieldType::Short
+                | FieldType::Boolean
+        )
     }
 
     pub fn to_descriptor(&self) -> String {

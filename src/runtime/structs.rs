@@ -28,6 +28,8 @@ pub struct Class {
     pub(crate) methods: Vec<MethodInfo>,
     pub(crate) attributes: Vec<AttributeInfo>,
     pub(crate) static_fields: Vec<RwLock<Variable>>,
+    // only for arrays of reference type
+    pub(crate) array_element_type: Option<Arc<Class>>,
     pub(in crate::runtime) clinit_call: parking_lot::ReentrantMutex<Cell<ClinitStatus>>,
 }
 

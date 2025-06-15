@@ -66,6 +66,7 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         methods,
         attributes,
         constant_pool,
+        array_element_type: None,
         static_fields: static_fields_var,
         clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::NotInit)),
     }
@@ -83,6 +84,7 @@ pub fn gen_array_class(class_name: Arc<str>) -> runtime::Class {
         attributes: vec![],
         constant_pool: vec![],
         static_fields: vec![],
+        array_element_type: None,
         // array has no clinit
         clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::Init)),
     }

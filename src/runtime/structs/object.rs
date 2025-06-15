@@ -86,11 +86,6 @@ impl Object {
         let arr = &self.fields_or_array.get();
         arr.len()
     }
-
-    pub fn get_array_len<T: ArrayType>(&self) -> usize {
-        let arr = &self.fields_or_array.get();
-        arr.len() / size_of::<T>()
-    }
 }
 
 pub struct Heap {

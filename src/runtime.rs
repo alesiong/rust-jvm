@@ -2,6 +2,7 @@ mod class_loader;
 mod interpreter;
 mod native;
 mod structs;
+mod inheritance;
 
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 pub use class_loader::*;
