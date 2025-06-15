@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[repr(C)]
 #[derive(Debug)]
 pub struct Object {
-    class: Arc<Class>,
+    pub(crate) class: Arc<Class>,
     // fields: [Variable]
     // array: [i8], [i16], etc.
     fields_or_array: UnsafeCell<[u8]>,
@@ -80,6 +80,11 @@ impl Object {
             fields as *mut [u8] as *mut T,
             fields.len() / size_of::<T>(),
         )
+    }
+
+    pub fn get_u8_array_size(&self) -> usize {
+        let arr = &self.fields_or_array.get();
+        arr.len()
     }
 
     pub fn get_array_len<T: ArrayType>(&self) -> usize {

@@ -6,7 +6,9 @@ use super::{
     ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
     NativeResult, NativeVariable, Object, VmEnv,
 };
-use crate::descriptor::{self, FieldDescriptor, FieldType, MethodDescriptor};
+use crate::descriptor::{
+    self, FieldDescriptor, FieldType, MethodDescriptor, parse_field_descriptor,
+};
 use crate::runtime::Heap;
 use crate::runtime::class_loader::resolve_field;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
@@ -14,6 +16,7 @@ use crate::runtime::native::NATIVE_FUNCTIONS;
 use crate::runtime::{self};
 pub use frame::*;
 use std::cmp::Ordering;
+use std::mem;
 use std::ops::Rem;
 use std::sync::{Arc, RwLock};
 
@@ -235,8 +238,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         return Next::Exception(Exception::new("java/lang/NullPointerException"));
                     }
                     let arr_obj = self.heap.read().unwrap().get(arr);
-                    // TODO: get arr type
-                    let arr_len = arr_obj.get_array_len::<i32>();
+
+                    let arr_len = Self::get_array_len(&arr_obj);
                     self.push_int(arr_len as _)
                 }
 
@@ -835,6 +838,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::NEWARRAY => {
                     except!(self.new_array());
                 }
+
+                // TODO: check static / instance field
                 inst::PUTFIELD => {
                     except!(self.put_field());
                 }
@@ -1120,28 +1125,51 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         if count < 0 {
             return Err(Exception::new("java/lang/NegativeArraySizeException"));
         }
+        let arr_type = match atype {
+            // bool
+            4 => FieldType::Boolean,
+            // byte
+            8 => FieldType::Byte,
+            // char
+            5 => FieldType::Char,
+            // float
+            6 => FieldType::Float,
+            // double
+            7 => FieldType::Double,
+            // short
+            9 => FieldType::Short,
+            // int
+            10 => FieldType::Int,
+            // long
+            11 => FieldType::Long,
+            _ => panic!("invalid array type {}", atype),
+        };
 
-        // TODO: build array class
+        // build array class
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let new_class = bootstrap_class_loader.resolve_primitive_array_class(
+            &VmEnv::with_cur_frame(&self.next_native_thread, self.frame),
+            &arr_type,
+        )?;
 
         let mut heap = self.heap.write().unwrap();
 
-        // FIXME:
-        let new_class = Arc::clone(&self.frame.class);
-        let id = match atype {
-            // bool, byte
-            4 | 8 => heap.allocate_array::<i8>(count as _, new_class),
+        let id = match arr_type {
+            FieldType::Boolean | FieldType::Byte => {
+                heap.allocate_array::<i8>(count as _, new_class)
+            }
             // char
-            5 => heap.allocate_array::<u16>(count as _, new_class),
+            FieldType::Char => heap.allocate_array::<u16>(count as _, new_class),
             // float
-            6 => heap.allocate_array::<f32>(count as _, new_class),
+            FieldType::Float => heap.allocate_array::<f32>(count as _, new_class),
             // double
-            7 => heap.allocate_array::<f64>(count as _, new_class),
+            FieldType::Double => heap.allocate_array::<f64>(count as _, new_class),
             // short
-            9 => heap.allocate_array::<i16>(count as _, new_class),
+            FieldType::Short => heap.allocate_array::<i16>(count as _, new_class),
             // int
-            10 => heap.allocate_array::<i32>(count as _, new_class),
+            FieldType::Int => heap.allocate_array::<i32>(count as _, new_class),
             // long
-            11 => heap.allocate_array::<i64>(count as _, new_class),
+            FieldType::Long => heap.allocate_array::<i64>(count as _, new_class),
             _ => panic!("invalid array type {}", atype),
         };
         self.frame.stack.push(Variable { reference: id });
@@ -1411,8 +1439,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             return Err(Exception::new("java/lang/NullPointerException"));
         }
         let arr_object = self.heap.read().unwrap().get(arr);
-        // TODO: check for array type
-        // TODO: check for array size
+
+        let field_type = Self::get_array_type(&arr_object.class);
+        let type_size = Self::get_field_type_size(field_type);
+        let arr_len = arr_object.get_u8_array_size() / type_size;
+        // check array type
+        if type_size != size_of::<T>() {
+            panic!("invalid array type");
+        }
+        // check array size
+        if index >= arr_len as _ {
+            return Err(Exception::new("java/lang/ArrayIndexOutOfBoundsException"));
+        }
         Ok(unsafe { arr_object.get_array_index::<T>(index as _) })
     }
 
@@ -1422,11 +1460,25 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         if arr == 0 {
             return Err(Exception::new("java/lang/NullPointerException"));
         }
-        // TODO: check array size
-        let arr_obj = self.heap.read().unwrap().get(arr);
+
+        let arr_object = self.heap.read().unwrap().get(arr);
+
+        let field_type = Self::get_array_type(&arr_object.class);
+        let type_size = Self::get_field_type_size(field_type);
+        let arr_len = arr_object.get_u8_array_size() / type_size;
+        // check array type
+        // TODO: check for object type
+        if type_size != size_of::<T>() {
+            return Err(Exception::new("java/lang/ArrayStoreException"));
+        }
+        // check array size
+        if index >= arr_len as _ {
+            return Err(Exception::new("java/lang/ArrayIndexOutOfBoundsException"));
+        }
+
         unsafe {
             // SAFETY: must be array
-            arr_obj.put_array_index(index as _, value);
+            arr_object.put_array_index(index as _, value);
         }
         Ok(())
     }
@@ -1491,5 +1543,37 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         )?;
         // TODO: maybe exception
         Ok(resolve_field(&class, field_ref, is_static).expect("field cannot be resolved"))
+    }
+
+    fn get_array_type(class: &Arc<Class>) -> FieldType {
+        if !class.class_name.starts_with("[") {
+            panic!("not an array");
+        }
+        let (_, FieldDescriptor(field_type)) =
+            parse_field_descriptor(&class.class_name).expect("invalid array type");
+        field_type
+    }
+
+    fn get_array_len(object: &Object) -> usize {
+        let field_type = Self::get_array_type(&object.class);
+        let raw_size = object.get_u8_array_size();
+
+        let size = Self::get_field_type_size(field_type);
+        raw_size / size
+    }
+
+    fn get_field_type_size(field_type: FieldType) -> usize {
+        match field_type {
+            FieldType::Byte => 1,
+            FieldType::Char => 2,
+            FieldType::Double => 8,
+            FieldType::Float => 4,
+            FieldType::Int => 4,
+            FieldType::Long => 8,
+            FieldType::Object(_) => 4,
+            FieldType::Short => 2,
+            FieldType::Boolean => 1,
+            FieldType::Array(_) => 4,
+        }
     }
 }

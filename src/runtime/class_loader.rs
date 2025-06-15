@@ -26,7 +26,7 @@ use super::{ElementValue, LocalVariable};
 
 mod bootstrap;
 use crate::class::JavaStr;
-use crate::consts::FieldAccessFlag;
+use crate::consts::{ClassAccessFlag, FieldAccessFlag};
 use crate::descriptor::FieldType;
 use crate::runtime::structs::ClinitStatus;
 
@@ -68,6 +68,23 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         constant_pool,
         static_fields: static_fields_var,
         clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::NotInit)),
+    }
+}
+
+pub fn gen_array_class(class_name: Arc<str>) -> runtime::Class {
+    runtime::Class {
+        access_flags: ClassAccessFlag::PUBLIC | ClassAccessFlag::FINAL | ClassAccessFlag::SYNTHETIC,
+        class_name,
+        super_class: None,
+        interfaces: Vec::with_capacity(2),
+        static_fields_info: vec![],
+        instance_fields_info: vec![],
+        methods: vec![],
+        attributes: vec![],
+        constant_pool: vec![],
+        static_fields: vec![],
+        // array has no clinit
+        clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::Init)),
     }
 }
 

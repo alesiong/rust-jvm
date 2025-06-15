@@ -1,6 +1,5 @@
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
-use std::sync::{RwLock, RwLockWriteGuard};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -13,8 +12,10 @@ use std::{
 };
 use zip::{ZipArchive, read::ZipFile};
 
+use crate::runtime::gen_array_class;
 use crate::{
     class::{self, parser},
+    descriptor::FieldType,
     runtime,
     runtime::AttributeInfo,
     runtime::FieldResolve,
@@ -73,6 +74,24 @@ impl BootstrapClassLoader {
         Ok(Arc::clone(class))
     }
 
+    pub(in crate::runtime) fn resolve_primitive_array_class(
+        &self,
+        env: &VmEnv,
+        field_type: &FieldType,
+    ) -> NativeResult<Arc<runtime::Class>> {
+        let class_name: Arc<str> = Arc::from("[".to_string() + &field_type.to_descriptor());
+        let class_cell = Arc::clone(
+            self.class_registry
+                .entry(class_name.to_string())
+                .or_default()
+                .value(),
+        );
+        let class = class_cell.get_or_try_init(|| self.define_array(env, class_name))?;
+
+        // array has no clinit
+        Ok(Arc::clone(class))
+    }
+
     fn run_clinit(&self, env: &VmEnv, class: &Arc<runtime::Class>) -> NativeResult<()> {
         let clinit_status = class.clinit_call.lock();
         if clinit_status.get() == ClinitStatus::Init {
@@ -121,6 +140,20 @@ impl BootstrapClassLoader {
         println!("defined {}", name);
 
         Ok(class)
+    }
+
+    fn define_array(&self, env: &VmEnv, class_name: Arc<str>) -> NativeResult<Arc<runtime::Class>> {
+        let mut class = gen_array_class(class_name);
+
+        class.super_class = Some(self.resolve_class(env, "java/lang/Object")?);
+        class
+            .interfaces
+            .push(self.resolve_class(env, "java/lang/Cloneable")?);
+        class
+            .interfaces
+            .push(self.resolve_class(env, "java/io/Serializable")?);
+
+        Ok(Arc::new(class))
     }
 
     fn load_super_class(

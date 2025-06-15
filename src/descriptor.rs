@@ -37,6 +37,21 @@ impl FieldType {
     pub fn is_long(&self) -> bool {
         matches!(self, FieldType::Long | FieldType::Double)
     }
+
+    pub fn to_descriptor(&self) -> String {
+        match self {
+            FieldType::Byte => "B".to_string(),
+            FieldType::Char => "C".to_string(),
+            FieldType::Double => "D".to_string(),
+            FieldType::Float => "F".to_string(),
+            FieldType::Int => "I".to_string(),
+            FieldType::Long => "J".to_string(),
+            FieldType::Short => "S".to_string(),
+            FieldType::Boolean => "Z".to_string(),
+            FieldType::Object(class_name) => format!("L{};", class_name),
+            FieldType::Array(element_type) => format!("[{}", element_type.to_descriptor()),
+        }
+    }
 }
 
 pub fn parse_field_descriptor(input: &str) -> IResult<&str, FieldDescriptor> {
