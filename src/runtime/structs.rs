@@ -31,7 +31,7 @@ pub struct Class {
     pub(in crate::runtime) clinit_call: parking_lot::ReentrantMutex<Cell<ClinitStatus>>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum ClinitStatus {
     NotInit,
     Init,
