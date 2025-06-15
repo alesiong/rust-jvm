@@ -873,13 +873,16 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 //  do monitor ops for synchronized
                 inst::INVOKESPECIAL | inst::INVOKEVIRTUAL => {
                     let cp_index = self.get_u16_args();
+                    // extend class's lifetime to avoid borrowing self
+                    let class = Arc::clone(&self.frame.class);
                     let runtime::ConstantPoolInfo::Methodref {
                         class,
                         name_and_type,
-                    } = self.frame.class.get_constant(cp_index)
+                    } = class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
+
                     let class_to_invoke = except!(self.resolve_class(&class));
                     return Next::InvokeSpecial {
                         class: class_to_invoke,
@@ -888,10 +891,12 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 }
                 inst::INVOKESTATIC => {
                     let cp_index = self.get_u16_args();
+                    // extend class's lifetime to avoid borrowing self
+                    let class = Arc::clone(&self.frame.class);
                     let runtime::ConstantPoolInfo::Methodref {
                         class,
                         name_and_type,
-                    } = self.frame.class.get_constant(cp_index)
+                    } = class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
@@ -1087,8 +1092,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn new_object(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
-        let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
-        else {
+        let class = Arc::clone(&self.frame.class);
+        let runtime::ConstantPoolInfo::Class(cp_info) = class.get_constant(cp_index) else {
             panic!("invalid constant type {}", cp_index);
         };
         let new_class = self.resolve_class(cp_info)?;
@@ -1148,7 +1153,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let new_class = bootstrap_class_loader.resolve_primitive_array_class(
-            &VmEnv::with_cur_frame(&self.next_native_thread, self.frame),
+            &VmEnv::new(&self.next_native_thread),
             &arr_type,
         )?;
 
@@ -1524,7 +1529,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
             class.get_or_load_class(|| {
                 bootstrap_class_loader.resolve_class(
-                    &VmEnv::with_cur_frame(&self.next_native_thread, self.frame),
+                    &VmEnv::new(&self.next_native_thread),
                     &class.name,
                 )
             })
@@ -1538,7 +1543,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     ) -> NativeResult<FieldResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader.resolve_class(
-            &VmEnv::with_cur_frame(&self.next_native_thread, self.frame),
+            &VmEnv::new(&self.next_native_thread),
             &field_ref.class_name,
         )?;
         // TODO: maybe exception

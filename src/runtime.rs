@@ -25,32 +25,10 @@ impl<'a, 'b> VmEnv<'a, 'b> {
         }
     }
 
-    pub fn with_cur_frame(thread: &'a Thread, cur_frame: &'b Frame) -> Self {
-        Self {
-            thread,
-            cur_frame: Some(cur_frame),
-        }
-    }
-
     pub fn get_thread(&self) -> &Thread {
         self.thread
     }
 
-    pub fn print_frames(&self) {
-        if let Some(f) = self.cur_frame {
-            print!("{}.{} <-", f.class.class_name, f.method_name);
-        }
-        let mut cur = Some(self.thread);
-        while let Some(t) = cur {
-            let mut frame = &t.top_frame;
-            while let Some(f) = frame {
-                print!("{}.{} <-", f.class.class_name, f.method_name);
-                frame = &f.previous_frame;
-            }
-            cur = t.previous_thread;
-        }
-        println!()
-    }
 }
 
 pub fn init_bootstrap_class_loader(modules: Vec<Box<dyn ModuleLoader + Send + Sync + 'static>>) {

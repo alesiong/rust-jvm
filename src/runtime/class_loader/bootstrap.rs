@@ -103,7 +103,7 @@ impl BootstrapClassLoader {
         // execute clinit
         if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
             println!("clinit found for {:?}", clinit);
-            let mut init_thread = env.get_thread().new_native_frame_group();
+            let mut init_thread = env.get_thread().new_native_frame_group(None);
             init_thread.new_frame(
                 Arc::clone(&class),
                 &clinit.name.to_str(),

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Thread<'t> {
-    pub(in crate::runtime) top_frame: Option<Box<Frame>>,
+    pub(in crate::runtime) top_frame: Option<Frame>,
     max_frame_size: usize,
     thread_id: usize,
     pub(in crate::runtime) previous_thread: Option<&'t Thread<'t>>,
@@ -27,6 +27,26 @@ pub struct Frame {
     pub(in crate::runtime) method_name: String,
     pub(super) param_descriptor: Vec<FieldType>,
     pub(super) is_static: bool,
+}
+
+impl Frame {
+    pub(in crate::runtime) fn clone_dummy(&self) -> Frame {
+        Frame {
+            class: Arc::clone(&self.class),
+            code: Arc::new([]),
+            return_type: self.return_type.clone(),
+            locals: vec![],
+            stack: vec![],
+            previous_frame: None,
+            method_name: self.method_name.clone(),
+            param_descriptor: self.param_descriptor.clone(),
+            is_static: self.is_static,
+        }
+    }
+
+    fn is_dummy(&self) -> bool {
+        self.code.is_empty()
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -146,9 +166,9 @@ impl Thread<'_> {
         )
     }
 
-    pub fn new_native_frame_group(&self) -> Thread<'_> {
+    pub fn new_native_frame_group(&self, frame: Option<Frame>) -> Thread<'_> {
         Thread {
-            top_frame: None,
+            top_frame: frame,
             max_frame_size: self.max_frame_size,
             thread_id: self.thread_id,
             previous_thread: Some(self),
@@ -156,7 +176,7 @@ impl Thread<'_> {
     }
 
     fn new_frame_inner(
-        top_frame: &mut Option<Box<Frame>>,
+        top_frame: &mut Option<Frame>,
         class: Arc<runtime::Class>,
         method_name: &str,
         param_descriptor: &[FieldType],
@@ -243,7 +263,7 @@ impl Thread<'_> {
             stack: Vec::with_capacity(code.max_stack as usize + 2),
             return_type: method_info.descriptor.return_type.clone(),
             class,
-            previous_frame,
+            previous_frame: previous_frame.map(Box::new),
             method_name: method_name.to_string(),
             param_descriptor: param_descriptor.to_vec(),
             is_static: !need_this,
@@ -259,22 +279,23 @@ impl Thread<'_> {
             return_address: lower,
         });
 
-        *top_frame = Some(Box::new(frame));
+        *top_frame = Some(frame);
     }
 
     pub fn top_frame(&mut self) -> Option<&mut Frame> {
-        self.top_frame.as_deref_mut()
+        self.top_frame.as_mut()
     }
 
     pub fn execute(&mut self) -> NativeResult<()> {
         let mut pc = 0;
         while let Some(mut frame) = self.top_frame.take() {
-            let mut env = InterpreterEnv::new(
-                &mut pc,
-                &mut frame,
-                &global::HEAP,
-                self.new_native_frame_group(),
-            );
+            if frame.is_dummy() {
+                break;
+            }
+
+            let native_frame_group = self.new_native_frame_group(Some(frame.clone_dummy()));
+            let mut env =
+                InterpreterEnv::new(&mut pc, &mut frame, &global::HEAP, native_frame_group);
             let next = env.execute();
 
             match next {
@@ -284,7 +305,7 @@ impl Thread<'_> {
                         Some(_) => (false, false),
                         None => (true, false),
                     };
-                    self.top_frame = frame.previous_frame;
+                    self.top_frame = frame.previous_frame.map(|f| *f);
                     pc = return_pc;
                     if let Some(ref mut frame) = self.top_frame {
                         if !is_void {
@@ -309,6 +330,7 @@ impl Thread<'_> {
                 }
                 Next::Exception(exception) => {
                     // TODO: exception handle inside current/top frame
+                    env.next_native_thread.print_frames();
                     return Err(exception);
                 }
                 Next::InvokeSpecial {
@@ -346,6 +368,19 @@ impl Thread<'_> {
             }
         }
         Ok(())
+    }
+
+    pub fn print_frames(&self) {
+        let mut cur = Some(self);
+        while let Some(t) = cur {
+            let mut frame = t.top_frame.as_ref();
+            while let Some(f) = frame {
+                print!("{}.{}({:?} -> {:?}) <- ", f.class.class_name, f.method_name, f.param_descriptor, f.return_type);
+                frame = f.previous_frame.as_deref();
+            }
+            cur = t.previous_thread;
+        }
+        println!()
     }
 }
 
