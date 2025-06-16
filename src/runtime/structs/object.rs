@@ -125,7 +125,6 @@ impl Heap {
         mut init_fields: impl FnMut(usize, *mut T),
     ) -> u32 {
         assert!(self.next_id < u32::MAX - 1, "heap oom");
-        let id = self.next_id;
         let (layout, _) = Layout::new::<Arc<Class>>()
             .extend(Layout::array::<UnsafeCell<T>>(size).unwrap())
             .unwrap();
@@ -140,7 +139,13 @@ impl Heap {
         for i in 0..size {
             init_fields(i, unsafe { slice_ptr.add(i) });
         }
-        let object = unsafe { Some(Box::from_raw(ptr).into()) };
+
+        self.allocate_id_for_obj(ptr)
+    }
+
+    fn allocate_id_for_obj(&mut self, object_ptr: *mut Object) -> u32 {
+        let id = self.next_id;
+        let object = unsafe { Some(Box::from_raw(object_ptr).into()) };
         if self.heap.len() <= id as usize {
             self.heap.resize(id as usize + 1, None);
         }
@@ -164,6 +169,27 @@ impl Heap {
                 .as_ref()
                 .expect("unavailable object id"),
         )
+    }
+
+    pub fn clone_object(&mut self, obj: &Object) -> u32 {
+        assert!(self.next_id < u32::MAX - 1, "heap oom");
+
+        let layout = Layout::for_value(obj);
+        let ptr = unsafe { alloc(layout) };
+        let u8_size = obj.get_u8_array_size();
+        let ptr = std::ptr::slice_from_raw_parts_mut(ptr, u8_size) as *mut Object;
+        unsafe {
+            addr_of_mut!((*ptr).class).write(Arc::clone(&obj.class));
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                obj.fields_or_array.get() as *const u8,
+                addr_of_mut!((*ptr).fields_or_array) as *mut u8,
+                u8_size,
+            );
+        }
+        self.allocate_id_for_obj(ptr)
     }
 }
 
