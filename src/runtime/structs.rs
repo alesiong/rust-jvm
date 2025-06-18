@@ -67,6 +67,10 @@ impl Class {
     pub(super) fn set_static_field(&self, index: u16, value: Variable) {
         *self.static_fields[index as usize].write().unwrap() = value;
     }
+
+    pub(super) fn is_array(&self) -> bool {
+        self.class_name.starts_with("[")
+    }
 }
 
 #[derive(Debug, Clone)]

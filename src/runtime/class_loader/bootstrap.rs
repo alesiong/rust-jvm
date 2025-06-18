@@ -29,6 +29,7 @@ use crate::{
 pub(in crate::runtime) struct BootstrapClassLoader {
     modules: Vec<Box<dyn ModuleLoader + Send + Sync + 'static>>,
     package_to_module: HashMap<String, usize>,
+    // TODO: use Arc<String>
     class_registry: DashMap<String, Arc<OnceCell<Arc<runtime::Class>>>>,
 }
 
@@ -79,14 +80,35 @@ impl BootstrapClassLoader {
         env: &VmEnv,
         field_type: &FieldType,
     ) -> NativeResult<Arc<runtime::Class>> {
-        let class_name: Arc<str> = Arc::from("[".to_string() + &field_type.to_descriptor());
+        let class_name_string = "[".to_string() + &field_type.to_descriptor();
+        let class_name: Arc<str> = Arc::from(class_name_string.as_str());
         let class_cell = Arc::clone(
             self.class_registry
-                .entry(class_name.to_string())
+                .entry(class_name_string)
                 .or_default()
                 .value(),
         );
-        let class = class_cell.get_or_try_init(|| self.define_array(env, class_name))?;
+        let class = class_cell.get_or_try_init(|| self.define_array(env, class_name, None))?;
+
+        // array has no clinit
+        Ok(Arc::clone(class))
+    }
+
+    pub(in crate::runtime) fn resolve_object_array_class(
+        &self,
+        env: &VmEnv,
+        ele_class: &Arc<runtime::Class>,
+    ) -> NativeResult<Arc<runtime::Class>> {
+        let class_name_string = "[".to_string() + &ele_class.class_name;
+        let class_name: Arc<str> = Arc::from(class_name_string.as_str());
+        let class_cell = Arc::clone(
+            self.class_registry
+                .entry(class_name_string)
+                .or_default()
+                .value(),
+        );
+        let class =
+            class_cell.get_or_try_init(|| self.define_array(env, class_name, Some(ele_class)))?;
 
         // array has no clinit
         Ok(Arc::clone(class))
@@ -142,7 +164,12 @@ impl BootstrapClassLoader {
         Ok(class)
     }
 
-    fn define_array(&self, env: &VmEnv, class_name: Arc<str>) -> NativeResult<Arc<runtime::Class>> {
+    fn define_array(
+        &self,
+        env: &VmEnv,
+        class_name: Arc<str>,
+        ele_class: Option<&Arc<runtime::Class>>,
+    ) -> NativeResult<Arc<runtime::Class>> {
         let mut class = gen_array_class(class_name);
 
         class.super_class = Some(self.resolve_class(env, "java/lang/Object")?);
@@ -152,6 +179,7 @@ impl BootstrapClassLoader {
         class
             .interfaces
             .push(self.resolve_class(env, "java/io/Serializable")?);
+        class.array_element_type = ele_class.map(Arc::clone);
 
         Ok(Arc::new(class))
     }
@@ -380,7 +408,9 @@ impl ModuleLoader for JModModule {
             .attributes
             .iter()
             .filter_map(|attr| match attr {
-                AttributeInfo::ModulePackages(pkg) => Some(pkg.iter().map(|s| s.to_str().into())),
+                AttributeInfo::ModulePackages(pkg) => {
+                    Some(pkg.iter().map(|s| Arc::clone(s).to_str_arc()))
+                }
                 _ => None,
             })
             .flatten()

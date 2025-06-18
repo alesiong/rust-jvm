@@ -364,6 +364,7 @@ impl Thread<'_> {
                         false,
                     );
                     pc = 0;
+                    self.print_frames();
                 }
             }
         }

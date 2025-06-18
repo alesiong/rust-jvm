@@ -1,3 +1,7 @@
+mod object;
+mod string;
+mod system;
+
 use crate::descriptor::FieldType;
 use crate::runtime;
 use crate::runtime::{Heap, NativeResult};
@@ -23,42 +27,51 @@ pub enum NativeVariable {
     Reference(u32),
 }
 
+impl NativeVariable {
+    pub fn get_boolean(&self) -> bool {
+        match self {
+            NativeVariable::Boolean(b) => *b,
+            _ => panic!("get_boolean: invalid type"),
+        }
+    }
+    pub fn get_byte(&self) -> i8 {
+        match self {
+            NativeVariable::Byte(b) => *b,
+            _ => panic!("get_byte: invalid type"),
+        }
+    }
+
+    pub fn get_char(&self) -> u16 {
+        match self {
+            NativeVariable::Char(c) => *c,
+            _ => panic!("get_char: invalid type"),
+        }
+    }
+
+    pub fn get_int(&self) -> i32 {
+        match self {
+            NativeVariable::Int(i) => *i,
+            _ => panic!("get_int: invalid type"),
+        }
+    }
+
+    pub fn get_ref(&self) -> u32 {
+        match self {
+            NativeVariable::Reference(r) => *r,
+            _ => panic!("get_ref: invalid type"),
+        }
+    }
+}
+
 // key: class_name, method_name, method_descriptor
 type Key = (String, String, Vec<FieldType>);
 pub(in crate::runtime) static NATIVE_FUNCTIONS: LazyLock<DashMap<Key, NativeFunction>> =
     LazyLock::new(DashMap::new);
 
 pub fn register_natives() {
-    NATIVE_FUNCTIONS.insert(
-        (
-            "java/lang/Object".to_string(),
-            "hashCode".to_string(),
-            vec![],
-        ),
-        native_object_hash_code,
-    );
-    NATIVE_FUNCTIONS.insert(
-        ("java/lang/Object".to_string(), "clone".to_string(), vec![]),
-        native_object_clone,
-    );
-}
-
-fn native_object_hash_code(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
-    let NativeVariable::Reference(rf) = env.args[0] else {
-        panic!("native_object_hash_code: invalid args");
-    };
-    Ok(Some(NativeVariable::Int(rf as i32)))
-}
-
-fn native_object_clone(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
-    let NativeVariable::Reference(obj_id) = env.args[0] else {
-        panic!("native_object_hash_code: invalid args");
-    };
-    let object = env.heap.read().unwrap().get(obj_id);
-    // TODO: check clonable
-
-    let cloned = env.heap.write().unwrap().clone_object(&object);
-    Ok(Some(NativeVariable::Reference(cloned)))
+    object::register_natives();
+    system::register_natives();
+    string::register_natives();
 }
 
 fn native_nop(_: NativeEnv) -> NativeResult<Option<NativeVariable>> {

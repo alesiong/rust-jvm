@@ -98,7 +98,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class_info_map.insert(
                 i as u16 + 1,
                 CpClassInfo {
-                    name: resolve_cp_utf8(cp, *name_index).to_str().into(),
+                    name: resolve_cp_utf8(cp, *name_index).to_str_arc(),
                     class: Default::default(),
                 },
             );
@@ -114,7 +114,7 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::Long(v) => Cpi::Long(*v),
             class::ConstantPoolInfo::Double(v) => Cpi::Double(*v),
             class::ConstantPoolInfo::Class { name_index } => Cpi::Class(CpClassInfo {
-                name: resolve_cp_utf8(cp, *name_index).to_str().into(),
+                name: resolve_cp_utf8(cp, *name_index).to_str_arc(),
                 class: Default::default(),
             }),
             class::ConstantPoolInfo::String { string_index } => {
@@ -528,7 +528,7 @@ fn parse_attribute<'a>(
         "InnerClasses" => runtime::AttributeInfo::InnerClasses,
         _ => {
             // TODO:
-            eprintln!("Unknown attribute {}", attribute_name);
+            eprintln!("Unknown attribute {:?}", attribute_name);
             // return Err(nom::Err::Error(error_position!(
             //     input,
             //     nom::error::ErrorKind::Tag
@@ -771,25 +771,73 @@ fn parse_local_variable(
 fn allocate_static_fields(static_fields_info: &mut [FieldInfo]) -> Vec<RwLock<Variable>> {
     let mut static_fields = Vec::with_capacity(static_fields_info.len());
     for field in static_fields_info {
+        let const_value = field.attributes.iter().find_map(|attr| {
+            if let runtime::AttributeInfo::ConstantValue(value) = attr {
+                Some(value)
+            } else {
+                None
+            }
+        });
         field.index = static_fields.len() as _;
         match field.descriptor.0 {
             FieldType::Byte
             | FieldType::Char
             | FieldType::Short
             | FieldType::Int
-            | FieldType::Boolean => static_fields.push(RwLock::new(Variable { int: 0 })),
+            | FieldType::Boolean => {
+                let value = const_value
+                    .map(|value| {
+                        use Const::*;
+                        let (Byte(a) | Char(a) | Int(a) | Short(a) | Boolean(a)) = value else {
+                            panic!("unexpected const value");
+                        };
+                        *a
+                    })
+                    .unwrap_or(0);
+                static_fields.push(RwLock::new(Variable { int: value }));
+            }
             FieldType::Double => {
-                let (a, b) = Variable::put_double(0.0);
+                let value = const_value
+                    .map(|value| {
+                        use Const::*;
+                        let Double(a) = value else {
+                            panic!("unexpected const value");
+                        };
+                        *a
+                    })
+                    .unwrap_or(0.0);
+                let (a, b) = Variable::put_double(value);
                 static_fields.push(RwLock::new(a));
                 static_fields.push(RwLock::new(b));
             }
-            FieldType::Float => static_fields.push(RwLock::new(Variable { float: 0.0 })),
+            FieldType::Float => {
+                let value = const_value
+                    .map(|value| {
+                        use Const::*;
+                        let Float(a) = value else {
+                            panic!("unexpected const value");
+                        };
+                        *a
+                    })
+                    .unwrap_or(0.0);
+                static_fields.push(RwLock::new(Variable { float: value }));
+            }
             FieldType::Long => {
-                let (a, b) = Variable::put_long(0);
+                let value = const_value
+                    .map(|value| {
+                        use Const::*;
+                        let Long(a) = value else {
+                            panic!("unexpected const value");
+                        };
+                        *a
+                    })
+                    .unwrap_or(0);
+                let (a, b) = Variable::put_long(value);
                 static_fields.push(RwLock::new(a));
                 static_fields.push(RwLock::new(b));
             }
             FieldType::Object(_) | FieldType::Array(_) => {
+                // TODO: String const
                 static_fields.push(RwLock::new(Variable { reference: 0 }))
             }
         }
@@ -809,7 +857,7 @@ fn resolve_static_field(
                 continue;
             }
             println!(
-                "loaded field from other class: {} from {}.{}",
+                "loaded field from other class: {:?} from {}.{}",
                 field_ref.name_and_type.name, class.class_name, field.index
             );
             return Some(FieldResolve::OtherClass {

@@ -4,19 +4,20 @@ mod instructions;
 
 use super::{
     ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
-    NativeResult, NativeVariable, Object, VmEnv,
+    NativeResult, NativeVariable, VmEnv,
 };
-use crate::descriptor::{
-    self, FieldDescriptor, FieldType, MethodDescriptor, parse_field_descriptor,
-};
+use crate::class::JavaStr;
+use crate::descriptor::FieldType::{Boolean, Byte, Char, Double, Float, Int, Long, Short};
+use crate::descriptor::{self, FieldType, MethodDescriptor};
 use crate::runtime::Heap;
 use crate::runtime::class_loader::resolve_field;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
+use crate::runtime::inheritance::{get_array_len, get_array_type};
 use crate::runtime::native::NATIVE_FUNCTIONS;
 use crate::runtime::{self};
 pub use frame::*;
+use nom::AsChar;
 use std::cmp::Ordering;
-use std::mem;
 use std::ops::Rem;
 use std::sync::{Arc, RwLock};
 
@@ -60,6 +61,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     fn execute(&mut self) -> Next {
+        // FIXME: hack for assertions
+        if self.frame.method_name == "<clinit>"
+            && *self.pc == 0
+            && (self.frame.class.class_name.as_ref() == "java/lang/StringUTF16"
+                || self.frame.class.class_name.as_ref() == "java/lang/StringLatin1"
+                || self.frame.class.class_name.as_ref() == "java/util/Arrays"
+                || self.frame.class.class_name.as_ref() == "java/lang/Math"
+                || self.frame.class.class_name.as_ref() == "java/lang/Character")
+        {
+            *self.pc = 8;
+        }
+
         macro_rules! except {
             ($expr:expr $(,)?) => {
                 match $expr {
@@ -239,7 +252,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     }
                     let arr_obj = self.heap.read().unwrap().get(arr);
 
-                    let arr_len = Self::get_array_len(&arr_obj);
+                    let arr_len = get_array_len(&arr_obj);
                     self.push_int(arr_len as _)
                 }
 
@@ -838,6 +851,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::NEWARRAY => {
                     except!(self.new_array());
                 }
+                inst::ANEWARRAY => {
+                    except!(self.new_object_array());
+                }
 
                 // TODO: check static / instance field
                 inst::PUTFIELD => {
@@ -891,16 +907,25 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 }
                 inst::INVOKESTATIC => {
                     let cp_index = self.get_u16_args();
-                    // extend class's lifetime to avoid borrowing self
-                    let class = Arc::clone(&self.frame.class);
                     let runtime::ConstantPoolInfo::Methodref {
                         class,
                         name_and_type,
-                    } = class.get_constant(cp_index)
+                    } = self.frame.class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
-                    let class_to_invoke = except!(self.resolve_class(&class));
+
+                    // FIXME: stack vanishing
+                    println!(
+                        "call {}.{:?}({:?}) from {}.{}",
+                        class.name,
+                        name_and_type.name,
+                        name_and_type.descriptor,
+                        self.frame.class.class_name,
+                        self.frame.method_name
+                    );
+
+                    let class_to_invoke = except!(self.resolve_class(class));
 
                     return Next::InvokeStatic {
                         class: class_to_invoke,
@@ -1092,13 +1117,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn new_object(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
-        let class = Arc::clone(&self.frame.class);
-        let runtime::ConstantPoolInfo::Class(cp_info) = class.get_constant(cp_index) else {
+        let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
+        else {
             panic!("invalid constant type {}", cp_index);
         };
         let new_class = self.resolve_class(cp_info)?;
 
-        let mut fields_types = Vec::new();
+        let max_size = new_class
+            .instance_fields_info
+            .last()
+            .map(|f| f.index + 1)
+            .unwrap_or(0);
+        let mut fields_types = Vec::with_capacity(max_size as _);
 
         for f in &new_class.instance_fields_info {
             if f.descriptor.0.is_long() {
@@ -1152,10 +1182,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class = bootstrap_class_loader.resolve_primitive_array_class(
-            &VmEnv::new(&self.next_native_thread),
-            &arr_type,
-        )?;
+        let new_class = bootstrap_class_loader
+            .resolve_primitive_array_class(&VmEnv::new(&self.next_native_thread), &arr_type)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1177,6 +1205,31 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             FieldType::Long => heap.allocate_array::<i64>(count as _, new_class),
             _ => panic!("invalid array type {}", atype),
         };
+        self.frame.stack.push(Variable { reference: id });
+        Ok(())
+    }
+
+    fn new_object_array(&mut self) -> NativeResult<()> {
+        let cp_index = self.get_u16_args();
+        let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
+        else {
+            panic!("invalid constant type {}", cp_index);
+        };
+        let new_class = self.resolve_class(cp_info)?;
+
+        let count = self.pop_int();
+        if count < 0 {
+            return Err(Exception::new("java/lang/NegativeArraySizeException"));
+        }
+
+        // build array class
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let new_class = bootstrap_class_loader
+            .resolve_object_array_class(&VmEnv::new(&self.next_native_thread), &new_class)?;
+
+        let mut heap = self.heap.write().unwrap();
+
+        let id = heap.allocate_array::<u32>(count as _, new_class);
         self.frame.stack.push(Variable { reference: id });
         Ok(())
     }
@@ -1302,7 +1355,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         match self.frame.class.get_constant(index) {
             runtime::ConstantPoolInfo::Integer(i) => self.iconst(*i),
             runtime::ConstantPoolInfo::Float(f) => self.fconst(*f),
-            runtime::ConstantPoolInfo::String(_) => todo!(),
+            runtime::ConstantPoolInfo::String(s) => {
+                self.frame.stack.push(Variable {
+                    reference: self.load_string(s).unwrap(),
+                });
+            }
             runtime::ConstantPoolInfo::Class { .. } => todo!(),
             runtime::ConstantPoolInfo::MethodHandle => todo!(),
             runtime::ConstantPoolInfo::MethodType => todo!(),
@@ -1311,6 +1368,81 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 panic!("ldc error, invalid constant type");
             }
         }
+    }
+
+    fn load_string(&self, str: &Arc<JavaStr>) -> NativeResult<u32> {
+        // TODO: pull out functions
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let env = VmEnv::new(&self.next_native_thread);
+        let string_class = bootstrap_class_loader.resolve_class(&env, "java/lang/String")?;
+        let byte_arr_class =
+            bootstrap_class_loader.resolve_primitive_array_class(&env, &FieldType::Byte)?;
+
+        // TODO: jvm env for compact String
+        let (java_string_bytes, has_multi_byte) = str.to_java_string_bytes(true);
+
+        // build inner bytes
+        let mut heap = self.heap.write().unwrap();
+        let byte_arr = heap.allocate_array::<i8>(java_string_bytes.len(), byte_arr_class);
+        drop(heap);
+        let byte_arr_obj = self.heap.read().unwrap().get(byte_arr);
+        unsafe {
+            byte_arr_obj
+                .get_u8_array()
+                .copy_from_nonoverlapping(java_string_bytes.as_ptr(), java_string_bytes.len());
+        }
+
+        // build string object
+        let max_size = string_class
+            .instance_fields_info
+            .last()
+            .map(|f| f.index + 1)
+            .unwrap_or(0);
+        let mut field_infos = Vec::with_capacity(max_size as _);
+
+        for f in &string_class.instance_fields_info {
+            if f.descriptor.0.is_long() {
+                field_infos.push(f);
+            }
+            field_infos.push(f);
+        }
+
+        
+        // TODO: hash code
+        let mut heap = self.heap.write().unwrap();
+        let id = unsafe {
+            heap.allocate_object(field_infos.len(), Arc::clone(&string_class), |i, v| {
+                let field_info = field_infos[i];
+                if field_info.name.as_ref() == JavaStr::from_str("value").as_ref() {
+                    v.write(Variable {
+                        reference: byte_arr,
+                    });
+                    return;
+                }
+                if field_info.name.as_ref() == JavaStr::from_str("coder").as_ref() {
+                    v.write(Variable {
+                        int: if has_multi_byte { 1 } else { 0 },
+                    });
+                    return;
+                }
+                use FieldType::*;
+                let var = match field_info.descriptor.0 {
+                    Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
+                    Float | Double => Variable { float: 0.0 },
+                    Object(_) | Array(_) => Variable { reference: 0 },
+                };
+
+                v.write(var);
+            })
+        };
+        unsafe {
+            let ptr = byte_arr_obj.get_u8_array();
+            for i in 0..byte_arr_obj.get_u8_array_size() {
+                println!("{}", ptr.add(i).read() as i8)
+            }
+        }
+
+        Ok(id)
     }
 
     #[inline]
@@ -1445,8 +1577,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
         let arr_object = self.heap.read().unwrap().get(arr);
 
-        let field_type = Self::get_array_type(&arr_object.class);
-        let type_size = Self::get_field_type_size(field_type);
+        let field_type = get_array_type(&arr_object.class).expect("not an array");
+        let type_size = field_type.get_field_type_size();
         let arr_len = arr_object.get_u8_array_size() / type_size;
         // check array type
         if type_size != size_of::<T>() {
@@ -1468,8 +1600,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let arr_object = self.heap.read().unwrap().get(arr);
 
-        let field_type = Self::get_array_type(&arr_object.class);
-        let type_size = Self::get_field_type_size(field_type);
+        let field_type = get_array_type(&arr_object.class).expect("not an array");
+        let type_size = field_type.get_field_type_size();
         let arr_len = arr_object.get_u8_array_size() / type_size;
         // check array type
         // TODO: check for object type
@@ -1528,10 +1660,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         } else {
             let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
             class.get_or_load_class(|| {
-                bootstrap_class_loader.resolve_class(
-                    &VmEnv::new(&self.next_native_thread),
-                    &class.name,
-                )
+                bootstrap_class_loader
+                    .resolve_class(&VmEnv::new(&self.next_native_thread), &class.name)
             })
         }
     }
@@ -1542,43 +1672,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         is_static: bool,
     ) -> NativeResult<FieldResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let class = bootstrap_class_loader.resolve_class(
-            &VmEnv::new(&self.next_native_thread),
-            &field_ref.class_name,
-        )?;
+        let class = bootstrap_class_loader
+            .resolve_class(&VmEnv::new(&self.next_native_thread), &field_ref.class_name)?;
         // TODO: maybe exception
         Ok(resolve_field(&class, field_ref, is_static).expect("field cannot be resolved"))
-    }
-
-    fn get_array_type(class: &Arc<Class>) -> FieldType {
-        if !class.class_name.starts_with("[") {
-            panic!("not an array");
-        }
-        let (_, FieldDescriptor(field_type)) =
-            parse_field_descriptor(&class.class_name).expect("invalid array type");
-        field_type
-    }
-
-    fn get_array_len(object: &Object) -> usize {
-        let field_type = Self::get_array_type(&object.class);
-        let raw_size = object.get_u8_array_size();
-
-        let size = Self::get_field_type_size(field_type);
-        raw_size / size
-    }
-
-    fn get_field_type_size(field_type: FieldType) -> usize {
-        match field_type {
-            FieldType::Byte => 1,
-            FieldType::Char => 2,
-            FieldType::Double => 8,
-            FieldType::Float => 4,
-            FieldType::Int => 4,
-            FieldType::Long => 8,
-            FieldType::Object(_) => 4,
-            FieldType::Short => 2,
-            FieldType::Boolean => 1,
-            FieldType::Array(_) => 4,
-        }
     }
 }

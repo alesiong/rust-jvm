@@ -66,6 +66,20 @@ impl FieldType {
             FieldType::Array(element_type) => format!("[{}", element_type.to_descriptor()),
         }
     }
+    pub fn get_field_type_size(&self) -> usize {
+        match self {
+            FieldType::Byte => 1,
+            FieldType::Char => 2,
+            FieldType::Double => 8,
+            FieldType::Float => 4,
+            FieldType::Int => 4,
+            FieldType::Long => 8,
+            FieldType::Object(_) => 4,
+            FieldType::Short => 2,
+            FieldType::Boolean => 1,
+            FieldType::Array(_) => 4,
+        }
+    }
 }
 
 pub fn parse_field_descriptor(input: &str) -> IResult<&str, FieldDescriptor> {

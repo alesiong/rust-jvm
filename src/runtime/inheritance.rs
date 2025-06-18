@@ -1,6 +1,6 @@
 use crate::consts::ClassAccessFlag;
 use crate::descriptor::{FieldDescriptor, FieldType, parse_field_descriptor};
-use crate::runtime::Class;
+use crate::runtime::{Class, Object};
 use std::sync::Arc;
 
 /// source: class of value to be assigned to array
@@ -68,11 +68,19 @@ pub(in crate::runtime) fn is_same_or_sub_class_of(
     false
 }
 
-fn get_array_type(class: &Arc<Class>) -> Option<FieldType> {
-    if !class.class_name.starts_with("[") {
+pub(in crate::runtime) fn get_array_type(class: &Arc<Class>) -> Option<FieldType> {
+    if !class.is_array() {
         return None;
     }
     let (_, FieldDescriptor(field_type)) =
         parse_field_descriptor(&class.class_name).expect("invalid array type");
-    Some(field_type)
+    let FieldType::Array(field_type) = field_type else {
+        panic!("invalid array type");
+    };
+    Some(*field_type)
+}
+
+pub(in crate::runtime) fn get_array_len(object: &Object) -> usize {
+    let field_type = get_array_type(&object.class).expect("not an array");
+    object.get_u8_array_size() / field_type.get_field_type_size()
 }

@@ -10,7 +10,7 @@ fn main() {
             "/opt/homebrew/Cellar/openjdk@17/17.0.15/libexec/openjdk.jdk/Contents/Home/",
             "java.base",
         )),
-        Box::new(ClassPathModule::new("main", "data/main")),
+        Box::new(ClassPathModule::new("main", "data")),
     ]);
 
     register_natives();

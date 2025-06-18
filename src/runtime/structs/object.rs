@@ -83,8 +83,12 @@ impl Object {
     }
 
     pub fn get_u8_array_size(&self) -> usize {
-        let arr = &self.fields_or_array.get();
+        let arr = self.fields_or_array.get();
         arr.len()
+    }
+
+    pub fn get_u8_array(&self) -> *mut u8 {
+        self.fields_or_array.get() as *mut u8
     }
 }
 
