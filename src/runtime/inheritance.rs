@@ -1,6 +1,6 @@
 use crate::consts::ClassAccessFlag;
 use crate::descriptor::{FieldDescriptor, FieldType, parse_field_descriptor};
-use crate::runtime::{Class, Object};
+use crate::runtime::{Class, HeapObject, Object};
 use std::sync::Arc;
 
 /// source: class of value to be assigned to array
@@ -80,7 +80,7 @@ pub(in crate::runtime) fn get_array_type(class: &Arc<Class>) -> Option<FieldType
     Some(*field_type)
 }
 
-pub(in crate::runtime) fn get_array_len(object: &Object) -> usize {
-    let field_type = get_array_type(&object.class).expect("not an array");
-    object.get_u8_array_size() / field_type.get_field_type_size()
+pub(in crate::runtime) fn get_array_len(object: &dyn Object) -> usize {
+    let field_type = get_array_type(object.get_class()).expect("not an array");
+    object.get_array_size(field_type.get_field_type_size())
 }

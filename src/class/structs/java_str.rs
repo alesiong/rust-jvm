@@ -154,7 +154,7 @@ impl JavaStr {
             }
         }
 
-        assert_eq!(len, max_len);
+        debug_assert_eq!(len, max_len);
     }
 
     /// Parse next UTF-8 character from the given position

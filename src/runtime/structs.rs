@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 pub use attributes::*;
 pub use constant_pool::*;
 pub use object::*;
+pub use string_table::*;
 
 use crate::class::JavaStr;
 use crate::runtime::Variable;
@@ -15,6 +16,7 @@ use crate::{
 mod attributes;
 mod constant_pool;
 mod object;
+mod string_table;
 
 #[derive(Debug)]
 pub struct Class {

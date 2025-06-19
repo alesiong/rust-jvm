@@ -6,19 +6,22 @@ use super::{
     ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
     NativeResult, NativeVariable, VmEnv,
 };
-use crate::class::JavaStr;
-use crate::descriptor::FieldType::{Boolean, Byte, Char, Double, Float, Int, Long, Short};
-use crate::descriptor::{self, FieldType, MethodDescriptor};
-use crate::runtime::Heap;
-use crate::runtime::class_loader::resolve_field;
-use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
-use crate::runtime::inheritance::{get_array_len, get_array_type};
-use crate::runtime::native::NATIVE_FUNCTIONS;
-use crate::runtime::{self};
+use crate::runtime::global::STRING_TABLE;
+use crate::runtime::structs::{get_array_index, put_array_index};
+use crate::{
+    class::JavaStr,
+    descriptor::{self, FieldType, MethodDescriptor},
+    runtime::{
+        self, Heap, Object,
+        class_loader::resolve_field,
+        global::BOOTSTRAP_CLASS_LOADER,
+        inheritance::{get_array_len, get_array_type},
+        native::NATIVE_FUNCTIONS,
+    },
+};
 pub use frame::*;
-use nom::AsChar;
 use std::cmp::Ordering;
-use std::ops::Rem;
+use std::ops::{Deref, DerefMut, Rem};
 use std::sync::{Arc, RwLock};
 
 struct InterpreterEnv<'t: 'f, 'f> {
@@ -252,7 +255,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     }
                     let arr_obj = self.heap.read().unwrap().get(arr);
 
-                    let arr_len = get_array_len(&arr_obj);
+                    let arr_len = get_array_len(arr_obj.as_ref());
                     self.push_int(arr_len as _)
                 }
 
@@ -1379,70 +1382,17 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             bootstrap_class_loader.resolve_primitive_array_class(&env, &FieldType::Byte)?;
 
         // TODO: jvm env for compact String
-        let (java_string_bytes, has_multi_byte) = str.to_java_string_bytes(true);
+        let (java_string_bytes, has_multi_byte) = Arc::clone(str).to_java_string_bytes_arc(true);
 
-        // build inner bytes
-        let mut heap = self.heap.write().unwrap();
-        let byte_arr = heap.allocate_array::<i8>(java_string_bytes.len(), byte_arr_class);
-        drop(heap);
-        let byte_arr_obj = self.heap.read().unwrap().get(byte_arr);
-        unsafe {
-            byte_arr_obj
-                .get_u8_array()
-                .copy_from_nonoverlapping(java_string_bytes.as_ptr(), java_string_bytes.len());
-        }
+        let string_id = self.heap.write().unwrap().intern_string(
+            java_string_bytes,
+            has_multi_byte,
+            STRING_TABLE.write().unwrap().deref_mut(),
+            byte_arr_class,
+            string_class,
+        );
 
-        // build string object
-        let max_size = string_class
-            .instance_fields_info
-            .last()
-            .map(|f| f.index + 1)
-            .unwrap_or(0);
-        let mut field_infos = Vec::with_capacity(max_size as _);
-
-        for f in &string_class.instance_fields_info {
-            if f.descriptor.0.is_long() {
-                field_infos.push(f);
-            }
-            field_infos.push(f);
-        }
-
-        
-        // TODO: hash code
-        let mut heap = self.heap.write().unwrap();
-        let id = unsafe {
-            heap.allocate_object(field_infos.len(), Arc::clone(&string_class), |i, v| {
-                let field_info = field_infos[i];
-                if field_info.name.as_ref() == JavaStr::from_str("value").as_ref() {
-                    v.write(Variable {
-                        reference: byte_arr,
-                    });
-                    return;
-                }
-                if field_info.name.as_ref() == JavaStr::from_str("coder").as_ref() {
-                    v.write(Variable {
-                        int: if has_multi_byte { 1 } else { 0 },
-                    });
-                    return;
-                }
-                use FieldType::*;
-                let var = match field_info.descriptor.0 {
-                    Byte | Char | Int | Short | Boolean | Long => Variable { int: 0 },
-                    Float | Double => Variable { float: 0.0 },
-                    Object(_) | Array(_) => Variable { reference: 0 },
-                };
-
-                v.write(var);
-            })
-        };
-        unsafe {
-            let ptr = byte_arr_obj.get_u8_array();
-            for i in 0..byte_arr_obj.get_u8_array_size() {
-                println!("{}", ptr.add(i).read() as i8)
-            }
-        }
-
-        Ok(id)
+        Ok(string_id)
     }
 
     #[inline]
@@ -1577,9 +1527,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
         let arr_object = self.heap.read().unwrap().get(arr);
 
-        let field_type = get_array_type(&arr_object.class).expect("not an array");
+        let field_type = get_array_type(arr_object.get_class()).expect("not an array");
         let type_size = field_type.get_field_type_size();
-        let arr_len = arr_object.get_u8_array_size() / type_size;
+        let arr_len = arr_object.get_array_size(type_size);
         // check array type
         if type_size != size_of::<T>() {
             panic!("invalid array type");
@@ -1588,7 +1538,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         if index >= arr_len as _ {
             return Err(Exception::new("java/lang/ArrayIndexOutOfBoundsException"));
         }
-        Ok(unsafe { arr_object.get_array_index::<T>(index as _) })
+        Ok(unsafe { get_array_index::<_, T>(arr_object.as_ref(), index as _) })
     }
 
     fn arr_store<T: ArrayType>(&mut self, value: T) -> NativeResult<()> {
@@ -1600,9 +1550,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let arr_object = self.heap.read().unwrap().get(arr);
 
-        let field_type = get_array_type(&arr_object.class).expect("not an array");
+        let field_type = get_array_type(arr_object.get_class()).expect("not an array");
         let type_size = field_type.get_field_type_size();
-        let arr_len = arr_object.get_u8_array_size() / type_size;
+        let arr_len = arr_object.get_array_size(type_size);
         // check array type
         // TODO: check for object type
         if type_size != size_of::<T>() {
@@ -1615,7 +1565,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         unsafe {
             // SAFETY: must be array
-            arr_object.put_array_index(index as _, value);
+            put_array_index(arr_object.as_ref(), index as _, value);
         }
         Ok(())
     }
