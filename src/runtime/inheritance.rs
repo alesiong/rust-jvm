@@ -1,6 +1,6 @@
 use crate::consts::ClassAccessFlag;
-use crate::descriptor::{FieldDescriptor, FieldType, parse_field_descriptor};
-use crate::runtime::{Class, HeapObject, Object};
+use crate::descriptor::{parse_field_descriptor, FieldDescriptor, FieldType};
+use crate::runtime::{Class, Object};
 use std::sync::Arc;
 
 /// source: class of value to be assigned to array

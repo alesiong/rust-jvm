@@ -3,6 +3,7 @@ mod interpreter;
 mod native;
 mod structs;
 mod inheritance;
+mod heap;
 
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
 pub use class_loader::*;
@@ -11,21 +12,18 @@ pub(crate) use structs::*;
 
 pub use native::*;
 
-struct VmEnv<'a, 'b> {
+struct VmEnv<'a> {
     thread: &'a Thread<'a>,
-    // TODO: make cur frame into thread
-    cur_frame: Option<&'b Frame>,
 }
 
-impl<'a, 'b> VmEnv<'a, 'b> {
+impl<'a> VmEnv<'a> {
     pub fn new(thread: &'a Thread) -> Self {
         Self {
             thread,
-            cur_frame: None,
         }
     }
 
-    pub fn get_thread(&self) -> &Thread {
+    pub fn get_thread(&self) -> &Thread<'a> {
         self.thread
     }
 

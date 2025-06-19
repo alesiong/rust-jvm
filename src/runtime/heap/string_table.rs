@@ -1,11 +1,11 @@
 use crate::class::JavaStr;
-use crate::runtime::structs::object::SpecialObject;
+use crate::runtime::heap::SpecialObject;
 use crate::runtime::{Class, Object, Variable};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct StringTable {
-    pub(super) map: HashMap<Arc<[u8]>, StringTableEntry>,
+    pub(in crate::runtime) map: HashMap<Arc<[u8]>, StringTableEntry>,
 }
 
 impl StringTable {
@@ -18,10 +18,10 @@ impl StringTable {
 
 #[derive(Clone, Debug)]
 pub struct StringTableEntry {
-    pub(super) string_id: u32,
-    pub(super) bytes_id: u32,
-    pub(super) hash: i32,
-    pub(super) has_multi_bytes: bool,
+    pub(in crate::runtime) string_id: u32,
+    pub(in crate::runtime) bytes_id: u32,
+    pub(in crate::runtime) hash: i32,
+    pub(in crate::runtime) has_multi_bytes: bool,
 }
 
 pub enum SpecialStringObject {

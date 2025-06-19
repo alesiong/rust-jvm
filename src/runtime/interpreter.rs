@@ -12,17 +12,18 @@ use crate::{
     class::JavaStr,
     descriptor::{self, FieldType, MethodDescriptor},
     runtime::{
-        self, Heap, Object,
-        class_loader::resolve_field,
+        self, class_loader::resolve_field,
         global::BOOTSTRAP_CLASS_LOADER,
         inheritance::{get_array_len, get_array_type},
         native::NATIVE_FUNCTIONS,
+        Object,
     },
 };
 pub use frame::*;
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut, Rem};
 use std::sync::{Arc, RwLock};
+use crate::runtime::heap::Heap;
 
 struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
@@ -857,6 +858,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::ANEWARRAY => {
                     except!(self.new_object_array());
                 }
+                inst::MULTIANEWARRAY => {
+                    except!(self.new_multi_object_array());
+                }
 
                 // TODO: check static / instance field
                 inst::PUTFIELD => {
@@ -1214,10 +1218,51 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn new_object_array(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
+        // TODO: support array type, e.g. [I, [Ljava/lang/String;
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {}", cp_index);
         };
+        let new_class = self.resolve_class(cp_info)?;
+
+        let count = self.pop_int();
+        if count < 0 {
+            return Err(Exception::new("java/lang/NegativeArraySizeException"));
+        }
+
+        // build array class
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let new_class = bootstrap_class_loader
+            .resolve_object_array_class(&VmEnv::new(&self.next_native_thread), &new_class)?;
+
+        let mut heap = self.heap.write().unwrap();
+
+        let id = heap.allocate_array::<u32>(count as _, new_class);
+        self.frame.stack.push(Variable { reference: id });
+        Ok(())
+    }
+
+    fn new_multi_object_array(&mut self) -> NativeResult<()> {
+        let cp_index = self.get_u16_args();
+        let dimensions = self.get_u8_args();
+        debug_assert!(dimensions >= 1);
+        let mut dims = vec![0; dimensions as usize];
+        for i in 0..dimensions {
+            let dim = self.pop_int();
+            debug_assert!(dim >= 0);
+            dims[(dimensions - i - 1) as usize] = dim;
+        }
+
+        // TODO: this is array type with dim >= dimensions
+        let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
+        else {
+            panic!("invalid constant type {}", cp_index);
+        };
+        debug_assert!(
+            cp_info.name.starts_with(&"[".repeat(dimensions as usize)),
+            "array class dimension not enough"
+        );
+
         let new_class = self.resolve_class(cp_info)?;
 
         let count = self.pop_int();

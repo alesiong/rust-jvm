@@ -37,7 +37,7 @@ pub trait ModuleLoader: Debug {
     fn packages(&self) -> Vec<Arc<str>>;
     fn name(&self) -> &str;
     // must end with .class
-    fn get_class_file(&self, class_name: &str) -> OwnedOrRef<class::Class>;
+    fn get_class_file(&self, class_name: &str) -> OwnedOrRef<'_, class::Class>;
 }
 
 impl BootstrapClassLoader {
@@ -421,9 +421,9 @@ impl ModuleLoader for JModModule {
         &self.name
     }
 
-    fn get_class_file(&self, class_name: &str) -> OwnedOrRef<class::Class> {
+    fn get_class_file(&self, class_name: &str) -> OwnedOrRef<'_, class::Class> {
         let class_file = &self.class_files[class_name];
-        let class_file = parser::class_file(&class_file).expect(&class_name);
+        let class_file = parser::class_file(class_file).expect(class_name);
 
         class_file.into()
     }
@@ -485,7 +485,7 @@ impl ModuleLoader for ClassPathModule {
         &self.name
     }
 
-    fn get_class_file(&self, class_name: &str) -> OwnedOrRef<class::Class> {
+    fn get_class_file(&self, class_name: &str) -> OwnedOrRef<'_, class::Class> {
         // TODO: unwrap
         let class_file = fs::read(self.base_path.join(class_name)).unwrap();
         let class_file = parser::class_file(&class_file).unwrap();

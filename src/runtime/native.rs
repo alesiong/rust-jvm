@@ -4,9 +4,10 @@ mod system;
 
 use crate::descriptor::FieldType;
 use crate::runtime;
-use crate::runtime::{Heap, NativeResult};
+use crate::runtime::NativeResult;
 use dashmap::DashMap;
 use std::sync::{Arc, LazyLock, RwLock};
+use crate::runtime::heap::Heap;
 
 pub type NativeFunction = fn(NativeEnv) -> NativeResult<Option<NativeVariable>>;
 
