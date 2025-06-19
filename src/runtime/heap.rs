@@ -314,3 +314,55 @@ impl HeapObject {
 }
 
 pub(in crate::runtime) trait SpecialObject: Object {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::gen_array_class;
+    use crate::runtime::structs::{get_array_index, put_array_index};
+
+    #[test]
+    fn test_ordinary_object() {
+        let mut heap = Heap::new();
+        let id = unsafe { heap.allocate_object(2, get_class(), |i, v| *v = Variable { int: 0 }) };
+        let object = heap.get(id);
+        unsafe {
+            object.put_field(1, Variable { reference: 1 });
+            assert_eq!(object.get_field(0).int, 0);
+            assert_eq!(object.get_field(1).reference, 1);
+        }
+        heap.deallocate(id);
+    }
+
+    #[test]
+    fn test_ordinary_array() {
+        let mut heap = Heap::new();
+        let id = heap.allocate_array::<i8>(2, get_class());
+        let object = heap.get(id);
+        unsafe {
+            object.put_array_index_raw(1, &[1], 1);
+            assert_eq!(object.get_array_index_raw(0, 1), &[0]);
+            assert_eq!(object.get_array_index_raw(1, 1), &[1]);
+        }
+        heap.deallocate(id);
+    }
+
+    #[test]
+    fn test_multibyte_array() {
+        let mut heap = Heap::new();
+        let id = heap.allocate_array::<i32>(2, get_class());
+        let object = heap.get(id);
+        unsafe {
+            put_array_index(object.as_ref(), 1, 1i32);
+            assert_eq!(get_array_index::<i32, _>(object.as_ref(), 1), 1i32);
+            assert_eq!(object.get_array_index_raw(0, 4), &[0, 0, 0, 0]);
+        }
+        heap.deallocate(id);
+    }
+
+    fn get_class() -> Arc<Class> {
+        let class = gen_array_class(Arc::from("[I"));
+
+        Arc::new(class)
+    }
+}

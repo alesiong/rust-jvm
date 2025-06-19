@@ -42,7 +42,7 @@ pub trait Object {
 /// Must ensure that this object is array of type T
 /// Must ensure there is no concurrent read/write
 #[allow(private_bounds)]
-pub(in crate::runtime) unsafe fn put_array_index<O, T>(obj: &O, index: usize, v: T)
+pub(in crate::runtime) unsafe fn put_array_index<T, O>(obj: &O, index: usize, v: T)
 where
     O: Object + ?Sized,
     T: ArrayType,
@@ -60,7 +60,7 @@ where
 /// Must ensure that this object is array of type T
 /// Must ensure there is no concurrent write
 #[allow(private_bounds)]
-pub(in crate::runtime) unsafe fn get_array_index<O, T>(obj: &O, index: usize) -> T
+pub(in crate::runtime) unsafe fn get_array_index<T, O>(obj: &O, index: usize) -> T
 where
     O: Object + ?Sized,
     T: ArrayType,
@@ -70,7 +70,7 @@ where
         let bytes = obj.get_array_index_raw(index, element_size);
         let mut res = T::default();
         (&mut res as *mut T)
-            .copy_from_nonoverlapping(bytes as *const [u8] as *const _, element_size);
+            .copy_from_nonoverlapping(bytes as *const [u8] as *const _, 1);
         res
     }
 }

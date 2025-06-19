@@ -7,23 +7,23 @@ use super::{
     NativeResult, NativeVariable, VmEnv,
 };
 use crate::runtime::global::STRING_TABLE;
+use crate::runtime::heap::Heap;
 use crate::runtime::structs::{get_array_index, put_array_index};
 use crate::{
     class::JavaStr,
     descriptor::{self, FieldType, MethodDescriptor},
     runtime::{
-        self, class_loader::resolve_field,
+        self, Object,
+        class_loader::resolve_field,
         global::BOOTSTRAP_CLASS_LOADER,
         inheritance::{get_array_len, get_array_type},
         native::NATIVE_FUNCTIONS,
-        Object,
     },
 };
 pub use frame::*;
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut, Rem};
 use std::sync::{Arc, RwLock};
-use crate::runtime::heap::Heap;
 
 struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
@@ -1583,7 +1583,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         if index >= arr_len as _ {
             return Err(Exception::new("java/lang/ArrayIndexOutOfBoundsException"));
         }
-        Ok(unsafe { get_array_index::<_, T>(arr_object.as_ref(), index as _) })
+        Ok(unsafe { get_array_index::<T, _>(arr_object.as_ref(), index as _) })
     }
 
     fn arr_store<T: ArrayType>(&mut self, value: T) -> NativeResult<()> {
