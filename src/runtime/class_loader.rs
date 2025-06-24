@@ -528,7 +528,7 @@ fn parse_attribute<'a>(
         "InnerClasses" => runtime::AttributeInfo::InnerClasses,
         _ => {
             // TODO:
-            eprintln!("Unknown attribute {:?}", attribute_name);
+            // eprintln!("Unknown attribute {:?}", attribute_name);
             // return Err(nom::Err::Error(error_position!(
             //     input,
             //     nom::error::ErrorKind::Tag

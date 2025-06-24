@@ -8,6 +8,7 @@ use super::{
 };
 use crate::runtime::global::STRING_TABLE;
 use crate::runtime::heap::Heap;
+use crate::runtime::inheritance::initialize_class;
 use crate::runtime::structs::{get_array_index, put_array_index};
 use crate::{
     class::JavaStr,
@@ -933,6 +934,10 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     );
 
                     let class_to_invoke = except!(self.resolve_class(class));
+                    except!(initialize_class(
+                        &VmEnv::new(&self.next_native_thread),
+                        &class_to_invoke
+                    ));
 
                     return Next::InvokeStatic {
                         class: class_to_invoke,
@@ -1129,6 +1134,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             panic!("invalid constant type {}", cp_index);
         };
         let new_class = self.resolve_class(cp_info)?;
+        initialize_class(&VmEnv::new(&self.next_native_thread), &new_class)?;
 
         let max_size = new_class
             .instance_fields_info
@@ -1351,6 +1357,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn get_static(&mut self) -> NativeResult<()> {
         let (class, index, is_long) = self.resolve_static_field()?;
+        initialize_class(&VmEnv::new(&self.next_native_thread), &class)?;
 
         self.frame.stack.push(class.get_static_field(index));
         if is_long {
@@ -1362,6 +1369,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn put_static(&mut self) -> NativeResult<()> {
         let (class, index, is_long) = self.resolve_static_field()?;
+        initialize_class(&VmEnv::new(&self.next_native_thread), &class)?;
 
         if is_long {
             class.set_static_field(index + 1, self.frame.stack.pop().unwrap());
@@ -1422,7 +1430,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         // TODO: pull out functions
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let env = VmEnv::new(&self.next_native_thread);
-        let string_class = bootstrap_class_loader.resolve_class(&env, "java/lang/String")?;
+        let string_class = bootstrap_class_loader.resolve_class("java/lang/String")?;
+        initialize_class(&env, &string_class)?;
         let byte_arr_class =
             bootstrap_class_loader.resolve_primitive_array_class(&env, &FieldType::Byte)?;
 
@@ -1656,7 +1665,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
             class.get_or_load_class(|| {
                 bootstrap_class_loader
-                    .resolve_class(&VmEnv::new(&self.next_native_thread), &class.name)
+                    .resolve_class(&class.name)
             })
         }
     }
@@ -1668,7 +1677,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     ) -> NativeResult<FieldResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader
-            .resolve_class(&VmEnv::new(&self.next_native_thread), &field_ref.class_name)?;
+            .resolve_class(&field_ref.class_name)?;
         // TODO: maybe exception
         Ok(resolve_field(&class, field_ref, is_static).expect("field cannot be resolved"))
     }

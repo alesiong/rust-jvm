@@ -3,6 +3,7 @@ use crate::class::JavaStr;
 use crate::consts::MethodAccessFlag;
 use crate::descriptor::ReturnType;
 use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
+use crate::runtime::inheritance::initialize_class;
 use crate::runtime::interpreter::{InterpreterEnv, global};
 use crate::runtime::{CodeAttribute, NativeResult, VmEnv};
 use crate::{descriptor::FieldType, runtime};
@@ -145,7 +146,8 @@ impl Thread<'_> {
     ) {
         let loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         // TODO: unwrap
-        let main_class = loader.resolve_class(&VmEnv::new(self), main_class).unwrap();
+        let main_class = loader.resolve_class(main_class).unwrap();
+        initialize_class(&VmEnv::new(self), &main_class).unwrap();
         self.new_frame(main_class, method_name, param_descriptor, 0);
     }
     pub fn new_frame(
@@ -376,7 +378,10 @@ impl Thread<'_> {
         while let Some(t) = cur {
             let mut frame = t.top_frame.as_ref();
             while let Some(f) = frame {
-                print!("{}.{}({:?} -> {:?}) <- ", f.class.class_name, f.method_name, f.param_descriptor, f.return_type);
+                print!(
+                    "{}.{}({:?} -> {:?}) <- ",
+                    f.class.class_name, f.method_name, f.param_descriptor, f.return_type
+                );
                 frame = f.previous_frame.as_deref();
             }
             cur = t.previous_thread;

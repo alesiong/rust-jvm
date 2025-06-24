@@ -1,12 +1,15 @@
 use crate::runtime::{
     ArrayType, Class, Object, SpecialStringObject, StringTable, StringTableEntry, Variable,
 };
-use std::alloc::{Layout, alloc};
+use std::alloc::{Layout, alloc, dealloc};
 use std::cell::UnsafeCell;
+use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::ptr::addr_of_mut;
 use std::sync::Arc;
 
 pub mod string_table;
+mod reflection;
 
 pub struct Heap {
     heap: Vec<Option<Arc<Box<HeapObject>>>>,
@@ -97,8 +100,16 @@ impl Heap {
             ) as Arc<dyn Object>
         }
     }
+    
+    pub fn clone(&mut self, obj: &dyn Object) -> u32 {
+        if let Some(obj) = obj.as_heap_object() {
+            return self.clone_object(obj);
+        }
+        // TODO: exception, support clone for array
+        panic!("not allow clone")
+    }
 
-    pub fn clone_object(&mut self, obj: &HeapObject) -> u32 {
+    fn clone_object(&mut self, obj: &HeapObject) -> u32 {
         assert!(self.next_id < Self::MAX_OBJECT_ID - 1, "heap oom");
 
         let layout = Layout::for_value(obj);

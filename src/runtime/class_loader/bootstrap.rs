@@ -1,5 +1,7 @@
+use bitflags::Flags;
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
+use std::sync::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -12,6 +14,7 @@ use std::{
 };
 use zip::{ZipArchive, read::ZipFile};
 
+use crate::consts::{ClassAccessFlag, MethodAccessFlag};
 use crate::runtime::gen_array_class;
 use crate::{
     class::{self, parser},
@@ -58,7 +61,6 @@ impl BootstrapClassLoader {
 
     pub(in crate::runtime) fn resolve_class(
         &self,
-        env: &VmEnv,
         class_name: &str,
     ) -> NativeResult<Arc<runtime::Class>> {
         let class_cell = Arc::clone(
@@ -68,9 +70,7 @@ impl BootstrapClassLoader {
                 .value(),
         );
 
-        let class = class_cell.get_or_try_init(|| self.define_class(env, class_name))?;
-
-        self.run_clinit(env, class)?;
+        let class = class_cell.get_or_try_init(|| self.define_class(class_name))?;
 
         Ok(Arc::clone(class))
     }
@@ -114,32 +114,7 @@ impl BootstrapClassLoader {
         Ok(Arc::clone(class))
     }
 
-    fn run_clinit(&self, env: &VmEnv, class: &Arc<runtime::Class>) -> NativeResult<()> {
-        let clinit_status = class.clinit_call.lock();
-        if clinit_status.get() == ClinitStatus::Init {
-            return Ok(());
-        }
-
-        // TODO: record error
-        clinit_status.set(ClinitStatus::Init);
-        // execute clinit
-        if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
-            println!("clinit found for {:?}", clinit);
-            let mut init_thread = env.get_thread().new_native_frame_group(None);
-            init_thread.new_frame(
-                Arc::clone(&class),
-                &clinit.name.to_str(),
-                &clinit.descriptor.parameters,
-                0,
-            );
-            init_thread.execute()?;
-        }
-        println!("loaded {}", class.class_name);
-
-        Ok(())
-    }
-
-    fn define_class(&self, env: &VmEnv, name: &str) -> NativeResult<Arc<runtime::Class>> {
+    fn define_class(&self, name: &str) -> NativeResult<Arc<runtime::Class>> {
         let package = if let Some((pkg, _)) = name.rsplit_once('/') {
             pkg
         } else {
@@ -151,8 +126,8 @@ impl BootstrapClassLoader {
 
         let class_file = &module.get_class_file(&(name.to_string() + ".class"));
         let mut class = runtime::parse_class(class_file);
-        self.load_super_class(env, &mut class, class_file.super_class)?;
-        self.load_interfaces(env, &mut class, &class_file.interfaces)?;
+        self.load_super_class(&mut class, class_file.super_class)?;
+        self.load_interfaces(&mut class, &class_file.interfaces)?;
 
         Self::resolve_this_class_field_ref(&mut class);
 
@@ -172,13 +147,13 @@ impl BootstrapClassLoader {
     ) -> NativeResult<Arc<runtime::Class>> {
         let mut class = gen_array_class(class_name);
 
-        class.super_class = Some(self.resolve_class(env, "java/lang/Object")?);
+        class.super_class = Some(self.resolve_class("java/lang/Object")?);
         class
             .interfaces
-            .push(self.resolve_class(env, "java/lang/Cloneable")?);
+            .push(self.resolve_class("java/lang/Cloneable")?);
         class
             .interfaces
-            .push(self.resolve_class(env, "java/io/Serializable")?);
+            .push(self.resolve_class("java/io/Serializable")?);
         class.array_element_type = ele_class.map(Arc::clone);
 
         Ok(Arc::new(class))
@@ -186,7 +161,6 @@ impl BootstrapClassLoader {
 
     fn load_super_class(
         &self,
-        env: &VmEnv,
         class: &mut runtime::Class,
         class_index: u16,
     ) -> NativeResult<()> {
@@ -195,20 +169,19 @@ impl BootstrapClassLoader {
             return Ok(());
         }
         let super_class = resolve_cp_class(&class.constant_pool, class_index);
-        let loaded = self.resolve_class(env, &super_class.name)?;
+        let loaded = self.resolve_class(&super_class.name)?;
         super_class.set_class(&loaded);
         class.super_class.replace(Arc::clone(&loaded));
         Ok(())
     }
     fn load_interfaces(
         &self,
-        env: &VmEnv,
         class: &mut runtime::Class,
         interfaces: &[u16],
     ) -> NativeResult<()> {
         for index in interfaces {
             let interface = resolve_cp_class(&class.constant_pool, *index);
-            let loaded = self.resolve_class(env, &interface.name)?;
+            let loaded = self.resolve_class(&interface.name)?;
             interface.set_class(&loaded);
             class.interfaces.push(loaded);
         }
@@ -347,8 +320,8 @@ impl BootstrapClassLoader {
 #[derive(Debug)]
 pub struct JModModule {
     name: String,
-    class_files: HashMap<String, Vec<u8>>,
     module_info: runtime::Class,
+    zip_file: Mutex<ZipArchive<File>>,
 }
 
 impl JModModule {
@@ -369,27 +342,9 @@ impl JModModule {
         let module_info = parser::class_file(&module_info).unwrap();
         let module_info = runtime::parse_class(&module_info);
 
-        // collect class files
-        let mut class_files = HashMap::new();
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i).unwrap();
-            if !file.name().starts_with("classes/") {
-                continue;
-            }
-            if !file.name().ends_with(".class") {
-                continue;
-            }
-            if file.name() == "classes/module-info.class" {
-                continue;
-            }
-            let name = file.name().replace("classes/", "");
-            let class_file = Self::get_class_bytes(&mut file);
-            class_files.insert(name, class_file);
-        }
-
         JModModule {
             name: module_name,
-            class_files,
+            zip_file: Mutex::new(archive),
             module_info,
         }
     }
@@ -422,9 +377,13 @@ impl ModuleLoader for JModModule {
     }
 
     fn get_class_file(&self, class_name: &str) -> OwnedOrRef<'_, class::Class> {
-        let class_file = &self.class_files[class_name];
-        let class_file = parser::class_file(class_file).expect(class_name);
+        let mut archive = self.zip_file.lock().unwrap();
+        let mut class_file = archive.by_name(&format!("classes/{}", class_name)).unwrap();
+        let class_bytes = Self::get_class_bytes(&mut class_file);
+        drop(class_file);
+        drop(archive);
 
+        let class_file = parser::class_file(&class_bytes).expect(class_name);
         class_file.into()
     }
 }

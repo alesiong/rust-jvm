@@ -24,6 +24,7 @@ pub struct StringTableEntry {
     pub(in crate::runtime) has_multi_bytes: bool,
 }
 
+#[derive(Debug, Clone)]
 pub enum SpecialStringObject {
     Bytes {
         bytes_class: Arc<Class>,

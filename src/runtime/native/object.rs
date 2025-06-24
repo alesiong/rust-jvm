@@ -17,12 +17,10 @@ fn native_object_clone(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
     };
     let heap = env.heap.read().unwrap();
     let object = heap.get(obj_id);
-    // TODO: support special object
-    let object = object.as_heap_object().unwrap();
     // TODO: check clonable
     drop(heap);
-
-    let cloned = env.heap.write().unwrap().clone_object(&object);
+    
+    let cloned = env.heap.write().unwrap().clone(object.as_ref());
     Ok(Some(NativeVariable::Reference(cloned)))
 }
 
