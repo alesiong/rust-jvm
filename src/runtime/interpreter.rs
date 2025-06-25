@@ -6,9 +6,9 @@ use super::{
     ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
     NativeResult, NativeVariable, VmEnv,
 };
+use crate::runtime::class_loader::{initialize_class, intern_string};
 use crate::runtime::global::STRING_TABLE;
 use crate::runtime::heap::Heap;
-use crate::runtime::inheritance::initialize_class;
 use crate::runtime::structs::{get_array_index, put_array_index};
 use crate::{
     class::JavaStr,
@@ -934,10 +934,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     );
 
                     let class_to_invoke = except!(self.resolve_class(class));
-                    except!(initialize_class(
-                        &VmEnv::new(&self.next_native_thread),
-                        &class_to_invoke
-                    ));
+                    except!(initialize_class(&self.new_vm_env(), &class_to_invoke));
 
                     return Next::InvokeStatic {
                         class: class_to_invoke,
@@ -1134,7 +1131,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             panic!("invalid constant type {}", cp_index);
         };
         let new_class = self.resolve_class(cp_info)?;
-        initialize_class(&VmEnv::new(&self.next_native_thread), &new_class)?;
+        initialize_class(&self.new_vm_env(), &new_class)?;
 
         let max_size = new_class
             .instance_fields_info
@@ -1195,8 +1192,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class = bootstrap_class_loader
-            .resolve_primitive_array_class(&VmEnv::new(&self.next_native_thread), &arr_type)?;
+        let new_class =
+            bootstrap_class_loader.resolve_primitive_array_class(&self.new_vm_env(), &arr_type)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1238,8 +1235,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class = bootstrap_class_loader
-            .resolve_object_array_class(&VmEnv::new(&self.next_native_thread), &new_class)?;
+        let new_class =
+            bootstrap_class_loader.resolve_object_array_class(&self.new_vm_env(), &new_class)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1278,8 +1275,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class = bootstrap_class_loader
-            .resolve_object_array_class(&VmEnv::new(&self.next_native_thread), &new_class)?;
+        let new_class =
+            bootstrap_class_loader.resolve_object_array_class(&self.new_vm_env(), &new_class)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1357,7 +1354,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn get_static(&mut self) -> NativeResult<()> {
         let (class, index, is_long) = self.resolve_static_field()?;
-        initialize_class(&VmEnv::new(&self.next_native_thread), &class)?;
+        initialize_class(&self.new_vm_env(), &class)?;
 
         self.frame.stack.push(class.get_static_field(index));
         if is_long {
@@ -1369,7 +1366,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn put_static(&mut self) -> NativeResult<()> {
         let (class, index, is_long) = self.resolve_static_field()?;
-        initialize_class(&VmEnv::new(&self.next_native_thread), &class)?;
+        initialize_class(&self.new_vm_env(), &class)?;
 
         if is_long {
             class.set_static_field(index + 1, self.frame.stack.pop().unwrap());
@@ -1427,26 +1424,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     fn load_string(&self, str: &Arc<JavaStr>) -> NativeResult<u32> {
-        // TODO: pull out functions
-        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let env = VmEnv::new(&self.next_native_thread);
-        let string_class = bootstrap_class_loader.resolve_class("java/lang/String")?;
-        initialize_class(&env, &string_class)?;
-        let byte_arr_class =
-            bootstrap_class_loader.resolve_primitive_array_class(&env, &FieldType::Byte)?;
-
-        // TODO: jvm env for compact String
-        let (java_string_bytes, has_multi_byte) = Arc::clone(str).to_java_string_bytes_arc(true);
-
-        let string_id = self.heap.write().unwrap().intern_string(
-            java_string_bytes,
-            has_multi_byte,
-            STRING_TABLE.write().unwrap().deref_mut(),
-            byte_arr_class,
-            string_class,
-        );
-
-        Ok(string_id)
+        intern_string(&self.new_vm_env(), str)
     }
 
     #[inline]
@@ -1663,10 +1641,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             Ok(Arc::clone(&self.frame.class))
         } else {
             let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-            class.get_or_load_class(|| {
-                bootstrap_class_loader
-                    .resolve_class(&class.name)
-            })
+            class.get_or_load_class(|| bootstrap_class_loader.resolve_class(&class.name))
         }
     }
 
@@ -1676,9 +1651,12 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         is_static: bool,
     ) -> NativeResult<FieldResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let class = bootstrap_class_loader
-            .resolve_class(&field_ref.class_name)?;
+        let class = bootstrap_class_loader.resolve_class(&field_ref.class_name)?;
         // TODO: maybe exception
         Ok(resolve_field(&class, field_ref, is_static).expect("field cannot be resolved"))
+    }
+
+    fn new_vm_env(&self) -> VmEnv {
+        VmEnv::new(&self.next_native_thread, self.heap)
     }
 }

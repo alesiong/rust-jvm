@@ -1,8 +1,6 @@
-use crate::consts::{ClassAccessFlag, MethodAccessFlag};
+use crate::consts::ClassAccessFlag;
 use crate::descriptor::{FieldDescriptor, FieldType, parse_field_descriptor};
-use crate::runtime;
-use crate::runtime::structs::ClinitStatus;
-use crate::runtime::{Class, NativeResult, Object, VmEnv};
+use crate::runtime::{Class, Object};
 use std::sync::Arc;
 
 /// source: class of value to be assigned to array
@@ -85,49 +83,4 @@ pub(in crate::runtime) fn get_array_type(class: &Arc<Class>) -> Option<FieldType
 pub(in crate::runtime) fn get_array_len(object: &dyn Object) -> usize {
     let field_type = get_array_type(object.get_class()).expect("not an array");
     object.get_array_size(field_type.get_field_type_size())
-}
-
-pub fn initialize_class(env: &VmEnv, class: &Arc<runtime::Class>) -> NativeResult<()> {
-    let clinit_status = class.clinit_call.lock();
-    if clinit_status.get() == ClinitStatus::Init {
-        return Ok(());
-    }
-
-    // TODO: record error
-    clinit_status.set(ClinitStatus::Init);
-
-    // TODO: init ConstantValue
-
-    // not interface, init super class
-    if !class.access_flags.contains(ClassAccessFlag::INTERFACE) {
-        if let Some(super_class) = class.super_class.as_ref() {
-            initialize_class(env, super_class)?;
-        }
-    }
-    // init interfaces with nonstatic, nonabstract methods
-    // TODO: cache for fast check
-    for interface in &class.interfaces {
-        if interface.methods.iter().any(|m| {
-            !m.access_flags.contains(MethodAccessFlag::ABSTRACT)
-                && !m.access_flags.contains(MethodAccessFlag::STATIC)
-        }) {
-            initialize_class(env, interface)?;
-        }
-    }
-
-    // execute clinit
-    if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
-        println!("clinit found for {:?}", clinit);
-        let mut init_thread = env.get_thread().new_native_frame_group(None);
-        init_thread.new_frame(
-            Arc::clone(&class),
-            &clinit.name.to_str(),
-            &clinit.descriptor.parameters,
-            0,
-        );
-        init_thread.execute()?;
-    }
-    println!("initialized {}", class.class_name);
-
-    Ok(())
 }

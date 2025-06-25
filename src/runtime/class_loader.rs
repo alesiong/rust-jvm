@@ -1,4 +1,6 @@
-use crate::runtime::{FieldResolve, Fieldref, MethodInfo, Module, ModuleExport, Variable};
+use crate::runtime::{
+    FieldResolve, Fieldref, MethodInfo, Module, ModuleExport, NativeResult, Variable, VmEnv,
+};
 use crate::{
     class,
     descriptor::{
@@ -26,10 +28,12 @@ use super::{ElementValue, LocalVariable};
 
 mod bootstrap;
 use crate::class::JavaStr;
-use crate::consts::{ClassAccessFlag, FieldAccessFlag};
+use crate::consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag};
 use crate::descriptor::FieldType;
 use crate::runtime::structs::ClinitStatus;
 
+use crate::runtime::global::{BOOTSTRAP_CLASS_LOADER, STRING_TABLE};
+use crate::runtime::heap::Heap;
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -771,73 +775,25 @@ fn parse_local_variable(
 fn allocate_static_fields(static_fields_info: &mut [FieldInfo]) -> Vec<RwLock<Variable>> {
     let mut static_fields = Vec::with_capacity(static_fields_info.len());
     for field in static_fields_info {
-        let const_value = field.attributes.iter().find_map(|attr| {
-            if let runtime::AttributeInfo::ConstantValue(value) = attr {
-                Some(value)
-            } else {
-                None
-            }
-        });
         field.index = static_fields.len() as _;
         match field.descriptor.0 {
             FieldType::Byte
             | FieldType::Char
             | FieldType::Short
             | FieldType::Int
-            | FieldType::Boolean => {
-                let value = const_value
-                    .map(|value| {
-                        use Const::*;
-                        let (Byte(a) | Char(a) | Int(a) | Short(a) | Boolean(a)) = value else {
-                            panic!("unexpected const value");
-                        };
-                        *a
-                    })
-                    .unwrap_or(0);
-                static_fields.push(RwLock::new(Variable { int: value }));
-            }
+            | FieldType::Boolean => static_fields.push(RwLock::new(Variable { int: 0 })),
             FieldType::Double => {
-                let value = const_value
-                    .map(|value| {
-                        use Const::*;
-                        let Double(a) = value else {
-                            panic!("unexpected const value");
-                        };
-                        *a
-                    })
-                    .unwrap_or(0.0);
-                let (a, b) = Variable::put_double(value);
+                let (a, b) = Variable::put_double(0.0);
                 static_fields.push(RwLock::new(a));
                 static_fields.push(RwLock::new(b));
             }
-            FieldType::Float => {
-                let value = const_value
-                    .map(|value| {
-                        use Const::*;
-                        let Float(a) = value else {
-                            panic!("unexpected const value");
-                        };
-                        *a
-                    })
-                    .unwrap_or(0.0);
-                static_fields.push(RwLock::new(Variable { float: value }));
-            }
+            FieldType::Float => static_fields.push(RwLock::new(Variable { float: 0.0 })),
             FieldType::Long => {
-                let value = const_value
-                    .map(|value| {
-                        use Const::*;
-                        let Long(a) = value else {
-                            panic!("unexpected const value");
-                        };
-                        *a
-                    })
-                    .unwrap_or(0);
-                let (a, b) = Variable::put_long(value);
+                let (a, b) = Variable::put_long(0);
                 static_fields.push(RwLock::new(a));
                 static_fields.push(RwLock::new(b));
             }
             FieldType::Object(_) | FieldType::Array(_) => {
-                // TODO: String const
                 static_fields.push(RwLock::new(Variable { reference: 0 }))
             }
         }
@@ -900,4 +856,143 @@ pub(in crate::runtime) fn resolve_field(
         class: Arc::clone(class),
         index,
     })
+}
+
+pub(in crate::runtime) fn initialize_class(
+    env: &VmEnv,
+    class: &Arc<runtime::Class>,
+) -> NativeResult<()> {
+    let clinit_status = class.clinit_call.lock();
+    if clinit_status.get() == ClinitStatus::Init {
+        return Ok(());
+    }
+
+    // TODO: record error
+    clinit_status.set(ClinitStatus::Init);
+
+    // TODO: init ConstantValue
+    init_static_from_const_value(env, class)?;
+
+    // not interface, init super class
+    if !class.access_flags.contains(ClassAccessFlag::INTERFACE) {
+        if let Some(super_class) = class.super_class.as_ref() {
+            initialize_class(env, super_class)?;
+        }
+    }
+    // init interfaces with nonstatic, nonabstract methods
+    // TODO: cache for fast check
+    for interface in &class.interfaces {
+        if interface.methods.iter().any(|m| {
+            !m.access_flags.contains(MethodAccessFlag::ABSTRACT)
+                && !m.access_flags.contains(MethodAccessFlag::STATIC)
+        }) {
+            initialize_class(env, interface)?;
+        }
+    }
+
+    // execute clinit
+    if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
+        println!("clinit found for {:?}", clinit);
+        let mut init_thread = env.get_thread().new_native_frame_group(None);
+        init_thread.new_frame(
+            Arc::clone(&class),
+            &clinit.name.to_str(),
+            &clinit.descriptor.parameters,
+            0,
+        );
+        init_thread.execute()?;
+    }
+    println!("initialized {}", class.class_name);
+
+    Ok(())
+}
+
+fn init_static_from_const_value(env: &VmEnv, class: &Arc<runtime::Class>) -> NativeResult<()> {
+    for field in &class.static_fields_info {
+        let const_value = field.attributes.iter().find_map(|attr| {
+            if let runtime::AttributeInfo::ConstantValue(value) = attr {
+                Some(value)
+            } else {
+                None
+            }
+        });
+        let Some(const_value) = const_value else {
+            continue;
+        };
+        let mut static_var = class.static_fields[field.index as usize].write().unwrap();
+        use Const::*;
+        match field.descriptor.0 {
+            FieldType::Byte
+            | FieldType::Char
+            | FieldType::Short
+            | FieldType::Int
+            | FieldType::Boolean => {
+                let (Byte(a) | Char(a) | Int(a) | Short(a) | Boolean(a)) = const_value else {
+                    panic!("unexpected const value");
+                };
+                static_var.int = *a;
+            }
+            FieldType::Double => {
+                let Double(a) = const_value else {
+                    panic!("unexpected const value");
+                };
+                let (a, b) = Variable::put_double(*a);
+                *static_var = a;
+                *class.static_fields[(field.index + 1) as usize]
+                    .write()
+                    .unwrap() = b;
+            }
+            FieldType::Float => {
+                let Float(a) = const_value else {
+                    panic!("unexpected const value");
+                };
+                static_var.float = *a;
+            }
+            FieldType::Long => {
+                let Long(a) = const_value else {
+                    panic!("unexpected const value");
+                };
+                let (a, b) = Variable::put_long(*a);
+                *static_var = a;
+                *class.static_fields[(field.index + 1) as usize]
+                    .write()
+                    .unwrap() = b;
+            }
+            FieldType::Object(ref class_name) => {
+                assert_eq!(class_name, "java/lang/String", "field must be String");
+                let String(a) = const_value else {
+                    panic!("unexpected const value");
+                };
+                let id = intern_string(env, a)?;
+                static_var.reference = id;
+            }
+            FieldType::Array(_) => {
+                panic!("cannot have const value for array");
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(in crate::runtime) fn intern_string(env: &VmEnv, str: &Arc<JavaStr>) -> NativeResult<u32> {
+    // TODO: string class should be resolved and init in very first
+
+    let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+    let string_class = bootstrap_class_loader.resolve_class("java/lang/String")?;
+    initialize_class(&env, &string_class)?;
+    let byte_arr_class =
+        bootstrap_class_loader.resolve_primitive_array_class(&env, &FieldType::Byte)?;
+
+    // TODO: jvm env for compact String
+    let (java_string_bytes, has_multi_byte) = Arc::clone(str).to_java_string_bytes_arc(true);
+
+    let string_id = env.heap.write().unwrap().intern_string(
+        java_string_bytes,
+        has_multi_byte,
+        &mut STRING_TABLE.write().unwrap(),
+        byte_arr_class,
+        string_class,
+    );
+
+    Ok(string_id)
 }
