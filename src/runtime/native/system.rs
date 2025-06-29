@@ -1,8 +1,12 @@
-use crate::descriptor::FieldType;
-use crate::runtime::inheritance::{get_array_type, is_array_assignable_to};
-use crate::runtime::native::NATIVE_FUNCTIONS;
-use crate::runtime::structs::get_array_index;
-use crate::runtime::{Exception, NativeEnv, NativeResult, NativeVariable, Object};
+use crate::{
+    descriptor::FieldType,
+    runtime::{
+        Exception, NativeEnv, NativeResult, NativeVariable, Object,
+        inheritance::{get_array_type, is_array_assignable_to},
+        native::NATIVE_FUNCTIONS,
+        structs::get_array_index,
+    },
+};
 use std::sync::LazyLock;
 
 //     public static native void arraycopy(Object src,  int  srcPos,
@@ -152,9 +156,7 @@ fn native_system_register_natives(_env: NativeEnv) -> NativeResult<Option<Native
         (
             "java/lang/System".to_string(),
             "identityHashCode".to_string(),
-            vec![
-                FieldType::Object("java/lang/Object".to_string()),
-            ],
+            vec![FieldType::Object("java/lang/Object".to_string())],
         ),
         super::object::native_object_hash_code,
     );

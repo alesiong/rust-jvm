@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use crate::class::JavaStr;
-use crate::runtime::NativeResult;
 use crate::{
+    class::JavaStr,
     descriptor::{FieldDescriptor, MethodDescriptor},
-    runtime::Class,
+    runtime::{Class, NativeResult},
 };
 
 #[derive(Debug)]

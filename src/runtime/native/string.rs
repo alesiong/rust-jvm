@@ -1,5 +1,4 @@
-use crate::runtime::native::NATIVE_FUNCTIONS;
-use crate::runtime::{NativeEnv, NativeResult, NativeVariable};
+use crate::runtime::{NativeEnv, NativeResult, NativeVariable, native::NATIVE_FUNCTIONS};
 
 // private static native boolean isBigEndian();
 fn native_stringutf16_isbegendian(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {

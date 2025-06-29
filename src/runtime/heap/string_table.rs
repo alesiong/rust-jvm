@@ -1,8 +1,8 @@
-use crate::class::JavaStr;
-use crate::runtime::heap::SpecialObject;
-use crate::runtime::{Class, Object, Variable};
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::{
+    class::JavaStr,
+    runtime::{Class, Object, Variable, heap::SpecialObject},
+};
+use std::{collections::HashMap, sync::Arc};
 
 pub struct StringTable {
     pub(in crate::runtime) map: HashMap<Arc<[u8]>, StringTableEntry>,

@@ -1,7 +1,5 @@
-use crate::runtime::heap::HeapObject;
-use crate::runtime::{Class, Variable};
-use std::sync::Arc;
-use std::{mem, slice};
+use crate::runtime::{Class, Variable, heap::HeapObject};
+use std::{mem, slice, sync::Arc};
 
 pub trait Object {
     fn get_class(&self) -> &Arc<Class>;
@@ -69,8 +67,7 @@ where
         let element_size = size_of::<T>();
         let bytes = obj.get_array_index_raw(index, element_size);
         let mut res = T::default();
-        (&mut res as *mut T)
-            .copy_from_nonoverlapping(bytes as *const [u8] as *const _, 1);
+        (&mut res as *mut T).copy_from_nonoverlapping(bytes as *const [u8] as *const _, 1);
         res
     }
 }

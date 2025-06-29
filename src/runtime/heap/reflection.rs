@@ -1,6 +1,4 @@
-use crate::class::JavaStr;
-use crate::runtime::heap::SpecialObject;
-use crate::runtime::{Class, Object, Variable};
+use crate::runtime::{Class, Object, Variable, heap::SpecialObject};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

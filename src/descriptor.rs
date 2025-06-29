@@ -62,7 +62,7 @@ impl FieldType {
             FieldType::Long => "J".to_string(),
             FieldType::Short => "S".to_string(),
             FieldType::Boolean => "Z".to_string(),
-            FieldType::Object(class_name) => format!("L{};", class_name),
+            FieldType::Object(class_name) => format!("L{class_name};"),
             FieldType::Array(element_type) => format!("[{}", element_type.to_descriptor()),
         }
     }

@@ -21,14 +21,16 @@ use nom::{
     number::complete::{be_u16, be_u32, u8},
 };
 use parking_lot::ReentrantMutex;
-use std::cell::Cell;
-use std::collections::HashMap;
-use std::convert::identity;
-use std::sync::{Arc, RwLock};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    convert::identity,
+    sync::{Arc, RwLock},
+};
 
 mod bootstrap;
 
-use crate::runtime::{Exception, MethodResolve, Methodref};
+use crate::runtime::{MethodResolve, Methodref};
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -208,7 +210,7 @@ fn convert_attribute(
 
 fn resolve_cp_utf8(constant_pool: &[class::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
     let class::ConstantPoolInfo::Utf8(string) = &constant_pool[index as usize - 1] else {
-        panic!("cannot find string {}", index);
+        panic!("cannot find string {index}");
     };
     Arc::clone(string)
 }
@@ -218,21 +220,21 @@ fn resolve_runtime_cp_utf8(
     index: u16,
 ) -> Arc<JavaStr> {
     let runtime::ConstantPoolInfo::Utf8(string) = &constant_pool[index as usize - 1] else {
-        panic!("cannot find string {}", index);
+        panic!("cannot find string {index}");
     };
     Arc::clone(string)
 }
 
 fn resolve_cp_package(constant_pool: &[runtime::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
     let runtime::ConstantPoolInfo::Package(name) = &constant_pool[index as usize - 1] else {
-        panic!("cannot find package {}", index);
+        panic!("cannot find package {index}");
     };
     Arc::clone(name)
 }
 
 fn resolve_cp_module(constant_pool: &[runtime::ConstantPoolInfo], index: u16) -> Arc<JavaStr> {
     let runtime::ConstantPoolInfo::Module(name) = &constant_pool[index as usize - 1] else {
-        panic!("cannot find module {}", index);
+        panic!("cannot find module {index}");
     };
     Arc::clone(name)
 }
@@ -240,7 +242,7 @@ fn resolve_cp_module(constant_pool: &[runtime::ConstantPoolInfo], index: u16) ->
 fn resolve_cp_class(constant_pool: &[runtime::ConstantPoolInfo], class_index: u16) -> &CpClassInfo {
     let runtime::ConstantPoolInfo::Class(cp_class_info) = &constant_pool[class_index as usize - 1]
     else {
-        panic!("cannot find class {}", class_index);
+        panic!("cannot find class {class_index}");
     };
     cp_class_info
 }
@@ -254,7 +256,7 @@ fn resolve_cp_name_and_type_field(
         descriptor_index,
     } = &constant_pool[index as usize - 1]
     else {
-        panic!("cannot find name_and_type {}", index);
+        panic!("cannot find name_and_type {index}");
     };
 
     let name = resolve_cp_utf8(constant_pool, *name_index);
@@ -279,7 +281,7 @@ fn resolve_cp_name_and_type_method(
         descriptor_index,
     } = &constant_pool[index as usize - 1]
     else {
-        panic!("cannot find name_and_type {}", index);
+        panic!("cannot find name_and_type {index}");
     };
 
     let name = resolve_cp_utf8(constant_pool, *name_index);
@@ -314,7 +316,7 @@ fn resolve_constant_value(constant_pool: &[runtime::ConstantPoolInfo], index: u1
         runtime::ConstantPoolInfo::String(str) => Const::String(Arc::clone(str)),
         runtime::ConstantPoolInfo::Utf8(string) => Const::String(Arc::clone(string)),
         _ => {
-            panic!("cannot find constant_value {}", index);
+            panic!("cannot find constant_value {index}");
         }
     }
 }
@@ -721,7 +723,7 @@ fn parse_element_value(
                 ElementValue::Array(values)
             }
             _ => {
-                eprintln!("unkonwn element value tag {}", tag);
+                eprintln!("unkonwn element value tag {tag}");
                 return Err(nom::Err::Error(error_position!(
                     input,
                     nom::error::ErrorKind::Tag
@@ -937,10 +939,10 @@ pub(in crate::runtime) fn initialize_class(
 
     // execute clinit
     if let Some(clinit) = class.methods.iter().find(|m| m.name.to_str() == "<clinit>") {
-        println!("clinit found for {:?}", clinit);
+        println!("clinit found for {clinit:?}");
         let mut init_thread = env.get_thread().new_native_frame_group(None);
         init_thread.new_frame(
-            Arc::clone(&class),
+            Arc::clone(class),
             &clinit.name.to_str(),
             &clinit.descriptor.parameters,
             0,
@@ -1024,9 +1026,9 @@ pub(in crate::runtime) fn intern_string(env: &VmEnv, str: &Arc<JavaStr>) -> Nati
 
     let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
     let string_class = bootstrap_class_loader.resolve_class("java/lang/String")?;
-    initialize_class(&env, &string_class)?;
+    initialize_class(env, &string_class)?;
     let byte_arr_class =
-        bootstrap_class_loader.resolve_primitive_array_class(&env, &FieldType::Byte)?;
+        bootstrap_class_loader.resolve_primitive_array_class(env, &FieldType::Byte)?;
 
     // TODO: jvm env for compact String
     let (java_string_bytes, has_multi_byte) = Arc::clone(str).to_java_string_bytes_arc(true);

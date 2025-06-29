@@ -1,7 +1,7 @@
 use paste::paste;
 macro_rules! make_instruction {
     ($inst: ident $byte: tt) => {
-        paste!{
+        paste! {
             // #[allow(unused)]
             pub(crate) const [<$inst:upper>]: u8 = [<"0x" $byte>];
         }
@@ -16,7 +16,7 @@ macro_rules! make_instructions {
     };
 }
 
-make_instructions!{
+make_instructions! {
 aaload	32
 aastore	53
 aconst_null	1

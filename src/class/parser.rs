@@ -194,7 +194,7 @@ fn parse_constant(mut input: &[u8]) -> IResult<&[u8], ConstantPoolInfo> {
             ConstantPoolInfo::Package { name_index }
         }
         _ => {
-            eprintln!("unkonwn constant type {}", tag);
+            eprintln!("unkonwn constant type {tag}");
             return Err(nom::Err::Error(error_position!(
                 input,
                 nom::error::ErrorKind::Tag

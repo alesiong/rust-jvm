@@ -1,15 +1,15 @@
 use crate::runtime::{
     ArrayType, Class, Object, SpecialStringObject, StringTable, StringTableEntry, Variable,
 };
-use std::alloc::{Layout, alloc, dealloc};
-use std::cell::UnsafeCell;
-use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
-use std::ptr::addr_of_mut;
-use std::sync::Arc;
+use std::{
+    alloc::{Layout, alloc},
+    cell::UnsafeCell,
+    ptr::addr_of_mut,
+    sync::Arc,
+};
 
-pub mod string_table;
 mod reflection;
+pub mod string_table;
 
 pub struct Heap {
     heap: Vec<Option<Arc<Box<HeapObject>>>>,
@@ -100,7 +100,7 @@ impl Heap {
             ) as Arc<dyn Object>
         }
     }
-    
+
     pub fn clone(&mut self, obj: &dyn Object) -> u32 {
         if let Some(obj) = obj.as_heap_object() {
             return self.clone_object(obj);
@@ -258,8 +258,7 @@ impl Object for Box<HeapObject> {
         debug_assert_eq!(
             self.get_u8_array_size() % element_size,
             0,
-            "element_size invalid: {}",
-            element_size
+            "element_size invalid: {element_size}"
         );
         debug_assert_eq!(v.len(), element_size, "v.len() != element_size");
         let array = unsafe { &mut *self.fields_or_array.get() };
@@ -270,8 +269,7 @@ impl Object for Box<HeapObject> {
         debug_assert_eq!(
             self.get_u8_array_size() % element_size,
             0,
-            "element_size invalid: {}",
-            element_size
+            "element_size invalid: {element_size}"
         );
         let array = unsafe { &mut *self.fields_or_array.get() };
         &array[index * element_size..(index + 1) * element_size]
@@ -282,9 +280,7 @@ impl Object for Box<HeapObject> {
         debug_assert_eq!(
             u8_size % element_size,
             0,
-            "element_size invalid: {}, u8_size: {}",
-            element_size,
-            u8_size
+            "element_size invalid: {element_size}, u8_size: {u8_size}"
         );
 
         u8_size / element_size
@@ -329,8 +325,10 @@ pub(in crate::runtime) trait SpecialObject: Object {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::gen_array_class;
-    use crate::runtime::structs::{get_array_index, put_array_index};
+    use crate::runtime::{
+        gen_array_class,
+        structs::{get_array_index, put_array_index},
+    };
 
     #[test]
     fn test_ordinary_object() {

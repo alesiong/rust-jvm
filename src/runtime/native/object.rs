@@ -1,9 +1,7 @@
-use crate::runtime::native::NATIVE_FUNCTIONS;
-use crate::runtime::{NativeEnv, NativeResult, NativeVariable};
-use std::sync::{RwLock, RwLockReadGuard};
+use crate::runtime::{NativeEnv, NativeResult, NativeVariable, native::NATIVE_FUNCTIONS};
 
 // public native int hashCode();
-pub(in super) fn native_object_hash_code(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
+pub(super) fn native_object_hash_code(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
     let NativeVariable::Reference(rf) = env.args[0] else {
         panic!("native_object_hash_code: invalid args");
     };
@@ -19,7 +17,7 @@ fn native_object_clone(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
     let object = heap.get(obj_id);
     // TODO: check clonable
     drop(heap);
-    
+
     let cloned = env.heap.write().unwrap().clone(object.as_ref());
     Ok(Some(NativeVariable::Reference(cloned)))
 }

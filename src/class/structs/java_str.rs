@@ -1,8 +1,10 @@
-use std::borrow::{Borrow, Cow};
-use std::fmt::{Debug, Display};
-use std::mem;
-use std::ops::Deref;
-use std::sync::Arc;
+use std::{
+    borrow::{Borrow, Cow},
+    fmt::{Debug, Display},
+    mem,
+    ops::Deref,
+    sync::Arc,
+};
 
 use cesu8_str::java as cesu8_java;
 

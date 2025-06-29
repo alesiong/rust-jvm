@@ -1,16 +1,18 @@
-use std::cell::Cell;
-use std::sync::{Arc, RwLock};
+use std::{
+    cell::Cell,
+    sync::{Arc, RwLock},
+};
 
+pub use crate::runtime::heap::string_table::*;
 pub use attributes::*;
 pub use constant_pool::*;
 pub use object::*;
-pub use crate::runtime::heap::string_table::*;
 
-use crate::class::JavaStr;
-use crate::runtime::Variable;
 use crate::{
+    class::JavaStr,
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
     descriptor::{FieldDescriptor, FieldType, MethodDescriptor},
+    runtime::Variable,
 };
 
 mod attributes;
@@ -110,7 +112,7 @@ impl From<nom::Err<nom::error::Error<&[u8]>>> for Exception {
     fn from(err: nom::Err<nom::error::Error<&[u8]>>) -> Self {
         Self {
             exception_type: "java/lang/ClassFormatError".to_string(),
-            message: format!("{:?}", err),
+            message: format!("{err:?}"),
         }
     }
 }

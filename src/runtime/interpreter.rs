@@ -6,24 +6,25 @@ use super::{
     ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, MethodResolve,
     NativeEnv, NativeResult, NativeVariable, VmEnv,
 };
-use crate::runtime::class_loader::{initialize_class, intern_string, resolve_static_method};
-use crate::runtime::heap::Heap;
-use crate::runtime::structs::{get_array_index, put_array_index};
 use crate::{
     class::JavaStr,
     descriptor::{self, FieldType, MethodDescriptor},
     runtime::{
         self, Object,
-        class_loader::resolve_field,
+        class_loader::{initialize_class, intern_string, resolve_field, resolve_static_method},
         global::BOOTSTRAP_CLASS_LOADER,
+        heap::Heap,
         inheritance::{get_array_len, get_array_type},
         native::NATIVE_FUNCTIONS,
+        structs::{get_array_index, put_array_index},
     },
 };
 pub use frame::*;
-use std::cmp::Ordering;
-use std::ops::{Deref, DerefMut, Rem};
-use std::sync::{Arc, RwLock};
+use std::{
+    cmp::Ordering,
+    ops::Rem,
+    sync::{Arc, RwLock},
+};
 
 struct InterpreterEnv<'t: 'f, 'f> {
     pc: &'t mut usize,
@@ -904,7 +905,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         ..
                     }) = class.get_constant(cp_index)
                     else {
-                        panic!("invalid constant type {}", cp_index);
+                        panic!("invalid constant type {cp_index}");
                     };
 
                     let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
@@ -920,7 +921,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let runtime::ConstantPoolInfo::Methodref(method_ref) =
                         self.frame.class.get_constant(cp_index)
                     else {
-                        panic!("invalid constant type {}", cp_index);
+                        panic!("invalid constant type {cp_index}");
                     };
 
                     let resolve = except!(self.resolve_static_method(method_ref));
@@ -940,7 +941,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         MethodResolve::OtherClass { class, index } => (class, index),
                     };
 
-                    except!(initialize_class(&self.new_vm_env(), &class_to_invoke));
+                    except!(initialize_class(&self.new_vm_env(), class_to_invoke));
 
                     return Next::InvokeStatic {
                         class: Arc::clone(class_to_invoke),
@@ -981,7 +982,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::NOP => {}
                 _ => {
                     // skip unknown instructions
-                    eprintln!("unknown instruction: {}", op);
+                    eprintln!("unknown instruction: {op}");
                 }
             }
 
@@ -1134,7 +1135,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
-            panic!("invalid constant type {}", cp_index);
+            panic!("invalid constant type {cp_index}");
         };
         let new_class = self.resolve_class(cp_info)?;
         initialize_class(&self.new_vm_env(), &new_class)?;
@@ -1193,7 +1194,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             10 => FieldType::Int,
             // long
             11 => FieldType::Long,
-            _ => panic!("invalid array type {}", atype),
+            _ => panic!("invalid array type {atype}"),
         };
 
         // build array class
@@ -1219,7 +1220,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             FieldType::Int => heap.allocate_array::<i32>(count as _, new_class),
             // long
             FieldType::Long => heap.allocate_array::<i64>(count as _, new_class),
-            _ => panic!("invalid array type {}", atype),
+            _ => panic!("invalid array type {atype}"),
         };
         self.frame.stack.push(Variable { reference: id });
         Ok(())
@@ -1230,7 +1231,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         // TODO: support array type, e.g. [I, [Ljava/lang/String;
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
-            panic!("invalid constant type {}", cp_index);
+            panic!("invalid constant type {cp_index}");
         };
         let new_class = self.resolve_class(cp_info)?;
 
@@ -1265,7 +1266,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         // TODO: this is array type with dim >= dimensions
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
-            panic!("invalid constant type {}", cp_index);
+            panic!("invalid constant type {cp_index}");
         };
         debug_assert!(
             cp_info.name.starts_with(&"[".repeat(dimensions as usize)),
@@ -1348,7 +1349,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             },
         ) = self.frame.class.get_constant(cp_index)
         else {
-            panic!("invalid constant type {}", cp_index);
+            panic!("invalid constant type {cp_index}");
         };
 
         let resolve = resolve.get_or_try_init(|| self.resolve_field(field_ref, false))?;
@@ -1393,7 +1394,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             },
         ) = self.frame.class.get_constant(cp_index)
         else {
-            panic!("invalid constant type {}", cp_index);
+            panic!("invalid constant type {cp_index}");
         };
 
         let resolve = resolve.get_or_try_init(|| self.resolve_field(field_ref, true))?;

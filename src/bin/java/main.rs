@@ -1,7 +1,8 @@
-use jvm::runtime::{ClassPathModule, JModModule, init_bootstrap_class_loader, register_natives};
 use jvm::{
     descriptor,
-    runtime::{self},
+    runtime::{
+        ClassPathModule, JModModule, init_bootstrap_class_loader, register_natives, {self},
+    },
 };
 
 fn main() {

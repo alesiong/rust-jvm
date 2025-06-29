@@ -1,15 +1,23 @@
 use super::{Next, instructions};
-use crate::class::JavaStr;
-use crate::consts::MethodAccessFlag;
-use crate::descriptor::ReturnType;
-use crate::runtime::global::BOOTSTRAP_CLASS_LOADER;
-use crate::runtime::class_loader::initialize_class;
-use crate::runtime::interpreter::{InterpreterEnv, global};
-use crate::runtime::{CodeAttribute, NativeResult, VmEnv};
-use crate::{descriptor::FieldType, runtime};
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::{
+    class::JavaStr,
+    consts::MethodAccessFlag,
+    descriptor::{FieldType, ReturnType},
+    runtime,
+    runtime::{
+        CodeAttribute, NativeResult, VmEnv,
+        class_loader::initialize_class,
+        global::BOOTSTRAP_CLASS_LOADER,
+        interpreter::{InterpreterEnv, global},
+    },
+};
+use std::{
+    fmt::{Debug, Formatter},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 pub struct Thread<'t> {
     pub(in crate::runtime) top_frame: Option<Frame>,
@@ -188,7 +196,7 @@ impl Thread<'_> {
         let Some(method_info) =
             class.resolve_method(&JavaStr::from_str(method_name), param_descriptor)
         else {
-            panic!("method not found: {}", method_name);
+            panic!("method not found: {method_name}");
         };
 
         // find code attribute
@@ -231,7 +239,7 @@ impl Thread<'_> {
             code_attribute = Some(&native_code_attribute)
         }
         let Some(code) = code_attribute else {
-            panic!("method code attributes not found: {}", method_name);
+            panic!("method code attributes not found: {method_name}");
         };
 
         let mut previous_frame = top_frame.take();

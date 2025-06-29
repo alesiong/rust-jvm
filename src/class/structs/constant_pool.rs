@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use crate::class::structs::java_str::JavaStr;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum ConstantPoolInfo {

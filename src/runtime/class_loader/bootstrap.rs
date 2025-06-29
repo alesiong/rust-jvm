@@ -1,7 +1,6 @@
 use bitflags::Flags;
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
-use std::sync::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -10,23 +9,19 @@ use std::{
     mem,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use zip::{ZipArchive, read::ZipFile};
 
-use crate::consts::{ClassAccessFlag, MethodAccessFlag};
-use crate::runtime::class_loader::resolve_static_method_inner;
-use crate::runtime::{MethodResolve, Methodref, gen_array_class};
 use crate::{
     class::{self, parser},
     descriptor::FieldType,
     runtime,
-    runtime::AttributeInfo,
-    runtime::FieldResolve,
-    runtime::class_loader::resolve_cp_class,
-    runtime::class_loader::resolve_static_field,
-    runtime::structs::ClinitStatus,
-    runtime::{NativeResult, VmEnv},
+    runtime::{
+        AttributeInfo, FieldResolve, MethodResolve, NativeResult, VmEnv,
+        class_loader::{resolve_cp_class, resolve_static_field, resolve_static_method_inner},
+        gen_array_class,
+    },
 };
 
 #[derive(Debug)]
@@ -136,7 +131,7 @@ impl BootstrapClassLoader {
         Self::resolve_this_class_field_ref_static(&class);
         Self::resolve_this_class_method_ref_static(&class);
 
-        println!("defined {}", name);
+        println!("defined {name}");
 
         Ok(class)
     }
@@ -407,7 +402,7 @@ impl ModuleLoader for JModModule {
 
     fn get_class_file(&self, class_name: &str) -> OwnedOrRef<'_, class::Class> {
         let mut archive = self.zip_file.lock().unwrap();
-        let mut class_file = archive.by_name(&format!("classes/{}", class_name)).unwrap();
+        let mut class_file = archive.by_name(&format!("classes/{class_name}")).unwrap();
         let class_bytes = Self::get_class_bytes(&mut class_file);
         drop(class_file);
         drop(archive);
