@@ -8,7 +8,9 @@ use crate::{
     runtime::{
         self, ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve,
         MethodResolve, NativeEnv, NativeResult, NativeVariable, Object, VmEnv,
-        class_loader::{initialize_class, intern_string, resolve_field, resolve_static_method},
+        class_loader::{
+            get_class_object, initialize_class, intern_string, resolve_field, resolve_static_method,
+        },
         global::BOOTSTRAP_CLASS_LOADER,
         heap::Heap,
         inheritance::{get_array_len, get_array_type},
@@ -63,18 +65,6 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     fn execute(&mut self) -> Next {
-        // FIXME: hack for assertions
-        if self.frame.method_name == "<clinit>"
-            && *self.pc == 0
-            && (self.frame.class.class_name.as_ref() == "java/lang/StringUTF16"
-                || self.frame.class.class_name.as_ref() == "java/lang/StringLatin1"
-                || self.frame.class.class_name.as_ref() == "java/util/Arrays"
-                || self.frame.class.class_name.as_ref() == "java/lang/Math"
-                || self.frame.class.class_name.as_ref() == "java/lang/Character")
-        {
-            *self.pc = 8;
-        }
-
         macro_rules! except {
             ($expr:expr $(,)?) => {
                 match $expr {
@@ -923,16 +913,6 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                     let resolve = except!(self.resolve_static_method(method_ref));
 
-                    // FIXME: stack vanishing
-                    println!(
-                        "call {}.{:?}({}) from {}.{}",
-                        method_ref.class_name,
-                        method_ref.name_and_type.name,
-                        method_ref.name_and_type.descriptor,
-                        self.frame.class.class_name,
-                        self.frame.method_name
-                    );
-
                     let (class_to_invoke, &index) = match &resolve {
                         MethodResolve::InThisClass(index) => (&self.frame.class, index),
                         MethodResolve::OtherClass { class, index } => (class, index),
@@ -1196,8 +1176,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class =
-            bootstrap_class_loader.resolve_primitive_array_class(&self.new_vm_env(), &arr_type)?;
+        let new_class = bootstrap_class_loader.resolve_primitive_array_class(&arr_type)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1239,8 +1218,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class =
-            bootstrap_class_loader.resolve_object_array_class(&self.new_vm_env(), &new_class)?;
+        let new_class = bootstrap_class_loader.resolve_object_array_class(&new_class)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1279,8 +1257,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         // build array class
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class =
-            bootstrap_class_loader.resolve_object_array_class(&self.new_vm_env(), &new_class)?;
+        let new_class = bootstrap_class_loader.resolve_object_array_class(&new_class)?;
 
         let mut heap = self.heap.write().unwrap();
 
@@ -1414,10 +1391,15 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             runtime::ConstantPoolInfo::Float(f) => self.fconst(*f),
             runtime::ConstantPoolInfo::String(s) => {
                 self.frame.stack.push(Variable {
-                    reference: self.load_string(s).unwrap(),
+                    reference: intern_string(s),
                 });
             }
-            runtime::ConstantPoolInfo::Class { .. } => todo!(),
+            runtime::ConstantPoolInfo::Class(class_info) => {
+                // TODO: unwrap
+                let class = self.resolve_class(class_info).unwrap();
+                let id = get_class_object(class).unwrap();
+                self.frame.stack.push(Variable { reference: id });
+            }
             runtime::ConstantPoolInfo::MethodHandle => todo!(),
             runtime::ConstantPoolInfo::MethodType => todo!(),
             runtime::ConstantPoolInfo::Dynamic => todo!(),
@@ -1425,10 +1407,6 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 panic!("ldc error, invalid constant type");
             }
         }
-    }
-
-    fn load_string(&self, str: &Arc<JavaStr>) -> NativeResult<u32> {
-        intern_string(&self.new_vm_env(), str)
     }
 
     #[inline]

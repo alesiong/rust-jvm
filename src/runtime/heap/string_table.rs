@@ -1,6 +1,10 @@
 use crate::{
     class::JavaStr,
-    runtime::{Class, Object, Variable, heap::SpecialObject},
+    runtime::{
+        Class, Object, Variable,
+        famous_classes::{BYTE_ARRAY_CLASS, STRING_CLASS},
+        heap::SpecialObject,
+    },
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -11,7 +15,7 @@ pub struct StringTable {
 impl StringTable {
     pub(in crate::runtime) fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            map: Default::default(),
         }
     }
 }
@@ -27,11 +31,9 @@ pub struct StringTableEntry {
 #[derive(Debug, Clone)]
 pub enum SpecialStringObject {
     Bytes {
-        bytes_class: Arc<Class>,
         bytes: Arc<[u8]>,
     },
     String {
-        string_class: Arc<Class>,
         bytes_id: u32,
         bytes: Arc<[u8]>,
         hash: i32,
@@ -42,8 +44,12 @@ pub enum SpecialStringObject {
 impl Object for SpecialStringObject {
     fn get_class(&self) -> &Arc<Class> {
         match self {
-            SpecialStringObject::Bytes { bytes_class, .. } => bytes_class,
-            SpecialStringObject::String { string_class, .. } => string_class,
+            SpecialStringObject::Bytes { .. } => BYTE_ARRAY_CLASS
+                .get()
+                .expect("byte array class must be loaded"),
+            SpecialStringObject::String { .. } => {
+                STRING_CLASS.get().expect("string class must be loaded")
+            }
         }
     }
 
@@ -53,7 +59,6 @@ impl Object for SpecialStringObject {
 
     unsafe fn get_field(&self, index: usize) -> Variable {
         let SpecialStringObject::String {
-            string_class,
             bytes_id,
             bytes,
             hash,
@@ -63,7 +68,8 @@ impl Object for SpecialStringObject {
             panic!("not an object");
         };
 
-        let field = string_class
+        let field = self
+            .get_class()
             .instance_fields_info
             .iter()
             .find(|f| f.index == index as _)
@@ -93,7 +99,7 @@ impl Object for SpecialStringObject {
     }
 
     unsafe fn get_array_index_raw(&self, index: usize, element_size: usize) -> &[u8] {
-        let SpecialStringObject::Bytes { bytes_class, bytes } = self else {
+        let SpecialStringObject::Bytes { bytes } = self else {
             panic!("not an array");
         };
         debug_assert_eq!(element_size, 1);
@@ -101,7 +107,7 @@ impl Object for SpecialStringObject {
     }
 
     fn get_array_size(&self, element_size: usize) -> usize {
-        let SpecialStringObject::Bytes { bytes_class, bytes } = self else {
+        let SpecialStringObject::Bytes { bytes } = self else {
             panic!("not an array");
         };
         debug_assert_eq!(element_size, 1);

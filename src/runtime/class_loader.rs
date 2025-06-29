@@ -30,7 +30,12 @@ use std::{
 
 mod bootstrap;
 
-use crate::runtime::{MethodResolve, Methodref};
+use crate::runtime::{
+    Class, MethodResolve, Methodref,
+    famous_classes::{BYTE_ARRAY_CLASS, CLASS_CLASS, STRING_CLASS},
+    global::{CLASS_TABLE, HEAP},
+    heap::Heap,
+};
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -1010,7 +1015,7 @@ fn init_static_from_const_value(env: &VmEnv, class: &Arc<runtime::Class>) -> Nat
                 let String(a) = const_value else {
                     panic!("unexpected const value");
                 };
-                let id = intern_string(env, a)?;
+                let id = intern_string(a);
                 static_var.reference = id;
             }
             FieldType::Array(_) => {
@@ -1021,25 +1026,34 @@ fn init_static_from_const_value(env: &VmEnv, class: &Arc<runtime::Class>) -> Nat
     Ok(())
 }
 
-pub(in crate::runtime) fn intern_string(env: &VmEnv, str: &Arc<JavaStr>) -> NativeResult<u32> {
-    // TODO: string class should be resolved and init in very first
-
-    let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-    let string_class = bootstrap_class_loader.resolve_class("java/lang/String")?;
-    initialize_class(env, &string_class)?;
-    let byte_arr_class =
-        bootstrap_class_loader.resolve_primitive_array_class(env, &FieldType::Byte)?;
+pub(in crate::runtime) fn intern_string(str: &Arc<JavaStr>) -> u32 {
+    let string_class = STRING_CLASS.get().expect("string class should be defined");
+    assert_eq!(
+        string_class.clinit_call.lock().get(),
+        ClinitStatus::Init,
+        "string class should be initialized"
+    );
 
     // TODO: jvm env for compact String
     let (java_string_bytes, has_multi_byte) = Arc::clone(str).to_java_string_bytes_arc(true);
 
-    let string_id = env.heap.write().unwrap().intern_string(
+    HEAP.write().unwrap().intern_string(
         java_string_bytes,
         has_multi_byte,
         &mut STRING_TABLE.write().unwrap(),
-        byte_arr_class,
-        string_class,
+    )
+}
+
+pub(in crate::runtime) fn get_class_object(class: Arc<Class>) -> NativeResult<u32> {
+    let class_class = CLASS_CLASS.get().expect("class class should be defined");
+    assert_eq!(
+        class_class.clinit_call.lock().get(),
+        ClinitStatus::Init,
+        "string class should be initialized"
     );
 
-    Ok(string_id)
+    Ok(HEAP
+        .write()
+        .unwrap()
+        .get_class_object(class, &mut CLASS_TABLE.write().unwrap()))
 }

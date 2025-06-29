@@ -1,35 +1,80 @@
-use crate::runtime::{Class, Object, Variable, heap::SpecialObject};
-use std::sync::Arc;
+use crate::{
+    class::JavaStr,
+    runtime::{Class, Object, Variable, famous_classes::CLASS_CLASS, heap::SpecialObject},
+};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering::Relaxed},
+    },
+};
 
-#[derive(Debug, Clone)]
+pub struct ClassTable {
+    pub(in crate::runtime) map: HashMap<Arc<str>, u32>,
+}
+
+impl ClassTable {
+    pub(in crate::runtime) fn new() -> Self {
+        Self {
+            map: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct SpecialClassObject {
-    class_class: Arc<Class>,
-    class: Arc<Class>,
+    pub(in crate::runtime) class: Arc<Class>,
+    pub(in crate::runtime) name_str: AtomicU32,
+    pub(super) package_name_str: AtomicU32,
 }
 
 impl Object for SpecialClassObject {
     fn get_class(&self) -> &Arc<Class> {
-        &self.class_class
+        CLASS_CLASS.get().expect("class must be loaded")
     }
 
     unsafe fn put_field(&self, index: usize, v: Variable) {
-        todo!()
-    }
-
-    unsafe fn get_field(&self, index: usize) -> Variable {
         let field = self
-            .class_class
+            .get_class()
             .instance_fields_info
             .iter()
             .find(|f| f.index == index as _)
             .expect("invalid field");
 
-        // if field.name.as_ref() == JavaStr::from_str("value").as_ref() {
-        //     Variable {
-        //         reference: *bytes_id,
-        //     }
-        // }
-        todo!()
+        if field.name.as_ref() == JavaStr::from_str("packageName").as_ref() {
+            // SAFETY: class verification guarantees that the field is a String
+            self.package_name_str.store(unsafe { v.reference }, Relaxed);
+        } else {
+            panic!("invalid field");
+        }
+    }
+
+    unsafe fn get_field(&self, index: usize) -> Variable {
+        let field = self
+            .get_class()
+            .instance_fields_info
+            .iter()
+            .find(|f| f.index == index as _)
+            .expect("invalid field");
+
+        if field.name.as_ref() == JavaStr::from_str("name").as_ref() {
+            Variable {
+                reference: self.name_str.load(Relaxed),
+            }
+        } else if field.name.as_ref() == JavaStr::from_str("packageName").as_ref() {
+            Variable {
+                reference: self.package_name_str.load(Relaxed),
+            }
+        } else if field.name.as_ref() == JavaStr::from_str("classRedefinedCount").as_ref() {
+            // TODO:
+            Variable { int: 0 }
+        } else if field.name.as_ref() == JavaStr::from_str("classLoader").as_ref() {
+            // TODO: always bootstrap loader
+            Variable { reference: 0 }
+        } else {
+            panic!("invalid field");
+        }
     }
 
     unsafe fn put_array_index_raw(&self, _index: usize, _v: &[u8], _element_size: usize) {

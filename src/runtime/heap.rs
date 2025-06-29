@@ -1,5 +1,6 @@
 use crate::runtime::{
     ArrayType, Class, Object, SpecialStringObject, StringTable, StringTableEntry, Variable,
+    heap::reflection::{ClassTable, SpecialClassObject},
 };
 use std::{
     alloc::{Layout, alloc},
@@ -8,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-mod reflection;
+pub mod reflection;
 pub mod string_table;
 
 pub struct Heap {
@@ -139,8 +140,6 @@ impl Heap {
         string: Arc<[u8]>,
         has_multi_bytes: bool,
         string_table: &mut StringTable,
-        bytes_class: Arc<Class>,
-        string_class: Arc<Class>,
     ) -> u32 {
         if let Some(entry) = string_table.map.get(&string) {
             return entry.string_id;
@@ -152,7 +151,6 @@ impl Heap {
         );
 
         let bytes_obj = Box::new(SpecialStringObject::Bytes {
-            bytes_class,
             bytes: Arc::clone(&string),
         });
         let bytes_id = allocate_id_for_obj(
@@ -162,7 +160,6 @@ impl Heap {
         ) | Self::MAX_OBJECT_ID;
 
         let string_obj = Box::new(SpecialStringObject::String {
-            string_class,
             bytes_id,
             bytes: Arc::clone(&string),
             hash: 0,
@@ -185,6 +182,33 @@ impl Heap {
         string_table.map.insert(string, table_entry);
 
         string_id
+    }
+
+    pub fn get_class_object(&mut self, class: Arc<Class>, class_table: &mut ClassTable) -> u32 {
+        let class_name = Arc::clone(&class.class_name);
+        if let Some(entry) = class_table.map.get(&class_name) {
+            return *entry;
+        }
+        assert!(
+            self.special_heap.next_id < Self::MAX_OBJECT_ID - 1,
+            "heap oom"
+        );
+
+        let class_obj = Box::new(SpecialClassObject {
+            class,
+            name_str: Default::default(),
+            package_name_str: Default::default(),
+        });
+
+        let class_id = allocate_id_for_obj(
+            &mut self.special_heap.heap,
+            &mut self.special_heap.next_id,
+            Box::into_raw(class_obj),
+        ) | Self::MAX_OBJECT_ID;
+
+        class_table.map.insert(class_name, class_id);
+
+        class_id
     }
 }
 

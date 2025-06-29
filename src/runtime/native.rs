@@ -1,3 +1,4 @@
+mod class;
 mod object;
 mod string;
 mod system;
@@ -70,10 +71,11 @@ type Key = (String, String, Vec<FieldType>);
 pub(in crate::runtime) static NATIVE_FUNCTIONS: LazyLock<DashMap<Key, NativeFunction>> =
     LazyLock::new(DashMap::new);
 
-pub fn register_natives() {
+pub(in crate::runtime) fn register_natives() {
     object::register_natives();
     system::register_natives();
     string::register_natives();
+    class::register_natives();
 }
 
 fn native_nop(_: NativeEnv) -> NativeResult<Option<NativeVariable>> {

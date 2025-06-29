@@ -73,7 +73,6 @@ impl BootstrapClassLoader {
 
     pub(in crate::runtime) fn resolve_primitive_array_class(
         &self,
-        env: &VmEnv,
         field_type: &FieldType,
     ) -> NativeResult<Arc<runtime::Class>> {
         let class_name_string = "[".to_string() + &field_type.to_descriptor();
@@ -84,7 +83,7 @@ impl BootstrapClassLoader {
                 .or_default()
                 .value(),
         );
-        let class = class_cell.get_or_try_init(|| self.define_array(env, class_name, None))?;
+        let class = class_cell.get_or_try_init(|| self.define_array(class_name, None))?;
 
         // array has no clinit
         Ok(Arc::clone(class))
@@ -92,7 +91,6 @@ impl BootstrapClassLoader {
 
     pub(in crate::runtime) fn resolve_object_array_class(
         &self,
-        env: &VmEnv,
         ele_class: &Arc<runtime::Class>,
     ) -> NativeResult<Arc<runtime::Class>> {
         let class_name_string = "[".to_string() + &ele_class.class_name;
@@ -104,7 +102,7 @@ impl BootstrapClassLoader {
                 .value(),
         );
         let class =
-            class_cell.get_or_try_init(|| self.define_array(env, class_name, Some(ele_class)))?;
+            class_cell.get_or_try_init(|| self.define_array(class_name, Some(ele_class)))?;
 
         // array has no clinit
         Ok(Arc::clone(class))
@@ -138,7 +136,6 @@ impl BootstrapClassLoader {
 
     fn define_array(
         &self,
-        env: &VmEnv,
         class_name: Arc<str>,
         ele_class: Option<&Arc<runtime::Class>>,
     ) -> NativeResult<Arc<runtime::Class>> {
