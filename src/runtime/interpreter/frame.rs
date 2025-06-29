@@ -1,4 +1,3 @@
-use super::{Next, instructions};
 use crate::{
     class::JavaStr,
     consts::MethodAccessFlag,
@@ -8,7 +7,7 @@ use crate::{
         CodeAttribute, NativeResult, VmEnv,
         class_loader::initialize_class,
         global::BOOTSTRAP_CLASS_LOADER,
-        interpreter::{InterpreterEnv, global},
+        interpreter::{InterpreterEnv, Next, global, instructions},
     },
 };
 use std::{
@@ -46,7 +45,10 @@ impl Frame {
             return_type: self.return_type.clone(),
             locals: vec![],
             stack: vec![],
-            previous_frame: None,
+            previous_frame: self
+                .previous_frame
+                .as_ref()
+                .map(|f| Box::new(f.clone_dummy())),
             method_name: self.method_name.clone(),
             param_descriptor: self.param_descriptor.clone(),
             is_static: self.is_static,
@@ -185,6 +187,26 @@ impl Thread<'_> {
         }
     }
 
+    fn new_frame_resolved(
+        top_frame: &mut Option<Frame>,
+        class: Arc<runtime::Class>,
+        index: u16,
+        return_address: usize,
+        need_this: bool,
+    ) {
+        let method_info = class
+            .methods
+            .get(index as usize)
+            .unwrap_or_else(|| panic!("method not found {index}"));
+        Self::new_frame_with_method_info(
+            top_frame,
+            Arc::clone(&class),
+            method_info,
+            return_address,
+            need_this,
+        );
+    }
+
     fn new_frame_inner(
         top_frame: &mut Option<Frame>,
         class: Arc<runtime::Class>,
@@ -198,7 +220,21 @@ impl Thread<'_> {
         else {
             panic!("method not found: {method_name}");
         };
-
+        Self::new_frame_with_method_info(
+            top_frame,
+            Arc::clone(&class),
+            method_info,
+            return_address,
+            need_this,
+        );
+    }
+    fn new_frame_with_method_info(
+        top_frame: &mut Option<Frame>,
+        class: Arc<runtime::Class>,
+        method_info: &runtime::MethodInfo,
+        return_address: usize,
+        need_this: bool,
+    ) {
         // find code attribute
         let mut code_attribute = None;
         for attr in &method_info.attributes {
@@ -239,7 +275,10 @@ impl Thread<'_> {
             code_attribute = Some(&native_code_attribute)
         }
         let Some(code) = code_attribute else {
-            panic!("method code attributes not found: {method_name}");
+            panic!(
+                "method code attributes not found: {}",
+                method_info.name.to_str()
+            );
         };
 
         let mut previous_frame = top_frame.take();
@@ -274,8 +313,8 @@ impl Thread<'_> {
             return_type: method_info.descriptor.return_type.clone(),
             class,
             previous_frame: previous_frame.map(Box::new),
-            method_name: method_name.to_string(),
-            param_descriptor: param_descriptor.to_vec(),
+            method_name: method_info.name.to_str().into_owned(),
+            param_descriptor: method_info.descriptor.parameters.to_vec(),
             is_static: !need_this,
         };
 
@@ -359,20 +398,9 @@ impl Thread<'_> {
                     );
                     pc = 0;
                 }
-                Next::InvokeStatic {
-                    class,
-                    name_and_type,
-                } => {
-                    // TODO: resolve method
+                Next::InvokeStatic { class, index } => {
                     self.top_frame = Some(frame);
-                    Self::new_frame_inner(
-                        &mut self.top_frame,
-                        class,
-                        &name_and_type.name.to_str(),
-                        &name_and_type.descriptor.parameters,
-                        pc + 1,
-                        false,
-                    );
+                    Self::new_frame_resolved(&mut self.top_frame, class, index, pc + 1, false);
                     pc = 0;
                     self.print_frames();
                 }
@@ -386,10 +414,15 @@ impl Thread<'_> {
         while let Some(t) = cur {
             let mut frame = t.top_frame.as_ref();
             while let Some(f) = frame {
-                print!(
-                    "{}.{}({:?} -> {:?}) <- ",
-                    f.class.class_name, f.method_name, f.param_descriptor, f.return_type
-                );
+                print!("{}.{}[(", f.class.class_name, f.method_name);
+                for field in &f.param_descriptor {
+                    print!("{field}, ");
+                }
+                print!(")");
+                if let Some(ret) = &f.return_type {
+                    print!(" -> {ret}");
+                }
+                print!("] <- ");
                 frame = f.previous_frame.as_deref();
             }
             cur = t.previous_thread;

@@ -2,15 +2,12 @@ mod frame;
 pub(crate) mod global;
 mod instructions;
 
-use super::{
-    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, MethodResolve,
-    NativeEnv, NativeResult, NativeVariable, VmEnv,
-};
 use crate::{
     class::JavaStr,
     descriptor::{self, FieldType, MethodDescriptor},
     runtime::{
-        self, Object,
+        self, ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve,
+        MethodResolve, NativeEnv, NativeResult, NativeVariable, Object, VmEnv,
         class_loader::{initialize_class, intern_string, resolve_field, resolve_static_method},
         global::BOOTSTRAP_CLASS_LOADER,
         heap::Heap,
@@ -45,7 +42,7 @@ enum Next {
     },
     InvokeStatic {
         class: Arc<Class>,
-        name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
+        index: u16,
     },
     Exception(Exception),
 }
@@ -928,7 +925,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                     // FIXME: stack vanishing
                     println!(
-                        "call {}.{:?}({:?}) from {}.{}",
+                        "call {}.{:?}({}) from {}.{}",
                         method_ref.class_name,
                         method_ref.name_and_type.name,
                         method_ref.name_and_type.descriptor,
@@ -945,7 +942,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                     return Next::InvokeStatic {
                         class: Arc::clone(class_to_invoke),
-                        name_and_type: method_ref.name_and_type.clone(),
+                        index,
                     };
                 }
                 inst::INVOKENATIVE => {

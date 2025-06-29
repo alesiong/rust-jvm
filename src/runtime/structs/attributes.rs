@@ -1,7 +1,7 @@
-use super::CpClassInfo;
 use crate::{
     class::JavaStr,
     descriptor::{FieldDescriptor, ReturnType},
+    runtime::CpClassInfo,
 };
 use std::sync::Arc;
 

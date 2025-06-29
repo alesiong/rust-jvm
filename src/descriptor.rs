@@ -1,12 +1,13 @@
 use nom::{
-    IResult, Parser,
-    branch::alt,
-    bytes::complete::take_until,
+    branch::alt, bytes::complete::take_until,
     character::complete::{char, one_of},
     combinator::{eof, map},
     multi::many0,
     sequence::delimited,
+    IResult,
+    Parser,
 };
+use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldDescriptor(pub(crate) FieldType);
@@ -15,6 +16,21 @@ pub struct FieldDescriptor(pub(crate) FieldType);
 pub struct MethodDescriptor {
     pub(crate) parameters: Vec<FieldType>,
     pub(crate) return_type: ReturnType,
+}
+
+impl Display for MethodDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "(")?;
+        for field_type in &self.parameters {
+            write!(f, "{field_type}, ")?
+        }
+        write!(f, ")")?;
+        if let Some(ret) = &self.return_type {
+            write!(f, " -> {ret}")?
+        }
+
+        Ok(())
+    }
 }
 
 pub type ReturnType = Option<FieldType>;
@@ -31,6 +47,23 @@ pub enum FieldType {
     Short,
     Boolean,
     Array(Box<FieldType>),
+}
+
+impl Display for FieldType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FieldType::Byte => write!(f, "byte"),
+            FieldType::Char => write!(f, "char"),
+            FieldType::Double => write!(f, "double"),
+            FieldType::Float => write!(f, "float"),
+            FieldType::Int => write!(f, "int"),
+            FieldType::Long => write!(f, "long"),
+            FieldType::Object(class_name) => write!(f, "{class_name}"),
+            FieldType::Short => write!(f, "short"),
+            FieldType::Boolean => write!(f, "boolean"),
+            FieldType::Array(element_type) => write!(f, "{element_type}[]"),
+        }
+    }
 }
 
 impl FieldType {
