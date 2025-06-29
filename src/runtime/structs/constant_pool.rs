@@ -17,10 +17,7 @@ pub enum ConstantPoolInfo {
     Class(CpClassInfo),
     String(Arc<JavaStr>),
     Fieldref(Fieldref),
-    Methodref {
-        class: CpClassInfo,
-        name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
-    },
+    Methodref(Methodref),
     InterfaceMethodref {
         class: CpClassInfo,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
@@ -94,6 +91,28 @@ impl FieldResolve {
         match self {
             FieldResolve::InThisClass(index) => *index,
             FieldResolve::OtherClass { index, .. } => *index,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Methodref {
+    pub(crate) class_name: Arc<str>,
+    pub(crate) name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
+    pub(crate) resolve: once_cell::sync::OnceCell<MethodResolve>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum MethodResolve {
+    InThisClass(u16),
+    OtherClass { class: Arc<Class>, index: u16 },
+}
+
+impl MethodResolve {
+    pub(crate) fn get_index(&self) -> u16 {
+        match self {
+            MethodResolve::InThisClass(index) => *index,
+            MethodResolve::OtherClass { index, .. } => *index,
         }
     }
 }

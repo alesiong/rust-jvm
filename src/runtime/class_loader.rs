@@ -1,14 +1,16 @@
-use crate::runtime::{
-    FieldResolve, Fieldref, MethodInfo, Module, ModuleExport, NativeResult, Variable, VmEnv,
-};
 use crate::{
-    class,
+    class::{self, JavaStr},
+    consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
     descriptor::{
-        self, FieldDescriptor, MethodDescriptor, parse_field_descriptor, parse_method_descriptor,
-        parse_return_type_descriptor,
+        self, FieldDescriptor, FieldType, MethodDescriptor, parse_field_descriptor,
+        parse_method_descriptor, parse_return_type_descriptor,
     },
     runtime::{
-        self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValuePair, FieldInfo,
+        self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValue, ElementValuePair,
+        FieldInfo, FieldResolve, Fieldref, LocalVariable, MethodInfo, Module, ModuleExport,
+        NativeResult, Variable, VmEnv,
+        global::{BOOTSTRAP_CLASS_LOADER, STRING_TABLE},
+        structs::ClinitStatus,
     },
 };
 use nom::{
@@ -24,16 +26,9 @@ use std::collections::HashMap;
 use std::convert::identity;
 use std::sync::{Arc, RwLock};
 
-use super::{ElementValue, LocalVariable};
-
 mod bootstrap;
-use crate::class::JavaStr;
-use crate::consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag};
-use crate::descriptor::FieldType;
-use crate::runtime::structs::ClinitStatus;
 
-use crate::runtime::global::{BOOTSTRAP_CLASS_LOADER, STRING_TABLE};
-use crate::runtime::heap::Heap;
+use crate::runtime::{Exception, MethodResolve, Methodref};
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -135,10 +130,11 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::Methodref {
                 class_index,
                 name_and_type_index,
-            } => Cpi::Methodref {
-                class: class_info_map[class_index].clone(),
+            } => Cpi::Methodref(Methodref {
+                class_name: Arc::clone(&class_info_map[class_index].name),
                 name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
-            },
+                resolve: Default::default(),
+            }),
             class::ConstantPoolInfo::InterfaceMethodref {
                 class_index,
                 name_and_type_index,
@@ -835,14 +831,10 @@ fn resolve_static_field(
     None
 }
 
-pub(in crate::runtime) fn resolve_field(
+fn resolve_instance_field(
     class: &Arc<runtime::Class>,
-    field_ref: &runtime::Fieldref,
-    is_static: bool,
+    field_ref: &Fieldref,
 ) -> Option<FieldResolve> {
-    if is_static {
-        return resolve_static_field(class, field_ref, false);
-    }
     let index = class
         .instance_fields_info
         .iter()
@@ -858,6 +850,60 @@ pub(in crate::runtime) fn resolve_field(
     })
 }
 
+pub(in crate::runtime) fn resolve_field(
+    class: &Arc<runtime::Class>,
+    field_ref: &Fieldref,
+    is_static: bool,
+) -> Option<FieldResolve> {
+    if is_static {
+        resolve_static_field(class, field_ref, false)
+    } else {
+        resolve_instance_field(class, field_ref)
+    }
+}
+
+fn resolve_static_method_inner(
+    class: &Arc<runtime::Class>,
+    method_ref: &Methodref,
+    skip_this: bool,
+) -> Option<MethodResolve> {
+    // TODO: signature polymorphic method
+    // find this class
+    if !skip_this {
+        for (id, method) in class.methods.iter().enumerate() {
+            if !method.access_flags.contains(MethodAccessFlag::STATIC) {
+                continue;
+            }
+            if method.name == method_ref.name_and_type.name
+                && method.descriptor == method_ref.name_and_type.descriptor
+            {
+                return Some(MethodResolve::OtherClass {
+                    class: Arc::clone(class),
+                    index: id as _,
+                });
+            }
+        }
+    }
+
+    // not interface, find super class
+    if !class.access_flags.contains(ClassAccessFlag::INTERFACE)
+        && let Some(super_class) = &class.super_class
+    {
+        if let Some(resolve) = resolve_static_method_inner(super_class, method_ref, false) {
+            return Some(resolve);
+        }
+    }
+
+    None
+}
+
+pub(in crate::runtime) fn resolve_static_method(
+    class: &Arc<runtime::Class>,
+    method_ref: &Methodref,
+) -> Option<MethodResolve> {
+    resolve_static_method_inner(class, method_ref, false)
+}
+
 pub(in crate::runtime) fn initialize_class(
     env: &VmEnv,
     class: &Arc<runtime::Class>,
@@ -870,7 +916,6 @@ pub(in crate::runtime) fn initialize_class(
     // TODO: record error
     clinit_status.set(ClinitStatus::Init);
 
-    // TODO: init ConstantValue
     init_static_from_const_value(env, class)?;
 
     // not interface, init super class

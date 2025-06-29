@@ -15,7 +15,8 @@ use std::{
 use zip::{ZipArchive, read::ZipFile};
 
 use crate::consts::{ClassAccessFlag, MethodAccessFlag};
-use crate::runtime::gen_array_class;
+use crate::runtime::class_loader::resolve_static_method_inner;
+use crate::runtime::{MethodResolve, Methodref, gen_array_class};
 use crate::{
     class::{self, parser},
     descriptor::FieldType,
@@ -133,6 +134,7 @@ impl BootstrapClassLoader {
 
         let class = Arc::new(class);
         Self::resolve_this_class_field_ref_static(&class);
+        Self::resolve_this_class_method_ref_static(&class);
 
         println!("defined {}", name);
 
@@ -159,11 +161,7 @@ impl BootstrapClassLoader {
         Ok(Arc::new(class))
     }
 
-    fn load_super_class(
-        &self,
-        class: &mut runtime::Class,
-        class_index: u16,
-    ) -> NativeResult<()> {
+    fn load_super_class(&self, class: &mut runtime::Class, class_index: u16) -> NativeResult<()> {
         // java.lang.Object
         if class_index == 0 {
             return Ok(());
@@ -174,11 +172,7 @@ impl BootstrapClassLoader {
         class.super_class.replace(Arc::clone(&loaded));
         Ok(())
     }
-    fn load_interfaces(
-        &self,
-        class: &mut runtime::Class,
-        interfaces: &[u16],
-    ) -> NativeResult<()> {
+    fn load_interfaces(&self, class: &mut runtime::Class, interfaces: &[u16]) -> NativeResult<()> {
         for index in interfaces {
             let interface = resolve_cp_class(&class.constant_pool, *index);
             let loaded = self.resolve_class(&interface.name)?;
@@ -313,6 +307,41 @@ impl BootstrapClassLoader {
                 };
                 field_ref.resolve.set(resolve).expect("must be empty now");
             }
+        }
+    }
+
+    fn resolve_this_class_method_ref_static(class: &Arc<runtime::Class>) {
+        let method_map: HashMap<_, _> = class
+            .methods
+            .iter()
+            .enumerate()
+            .map(|(i, method)| ((method.name.as_ref(), &method.descriptor), i))
+            .collect();
+
+        for cp_in_file in &class.constant_pool {
+            let runtime::ConstantPoolInfo::Methodref(method_ref) = cp_in_file else {
+                continue;
+            };
+
+            if method_ref.class_name != class.class_name {
+                // not in this class, to be resolved at runtime
+                continue;
+            }
+            let name_and_type = &method_ref.name_and_type;
+
+            let key = &(name_and_type.name.as_ref(), &name_and_type.descriptor);
+
+            let index = method_map.get(key);
+            if let Some(&index) = index {
+                // inside this class
+                method_ref
+                    .resolve
+                    .set(MethodResolve::InThisClass(index as u16))
+                    .expect("must be empty now");
+            } else if let Some(resolve) = resolve_static_method_inner(class, method_ref, true) {
+                method_ref.resolve.set(resolve).expect("must be empty now");
+            }
+            // if not found, must be a non-static method, resolve at runtime
         }
     }
 }

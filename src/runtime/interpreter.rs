@@ -3,11 +3,10 @@ pub(crate) mod global;
 mod instructions;
 
 use super::{
-    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, NativeEnv,
-    NativeResult, NativeVariable, VmEnv,
+    ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve, MethodResolve,
+    NativeEnv, NativeResult, NativeVariable, VmEnv,
 };
-use crate::runtime::class_loader::{initialize_class, intern_string};
-use crate::runtime::global::STRING_TABLE;
+use crate::runtime::class_loader::{initialize_class, intern_string, resolve_static_method};
 use crate::runtime::heap::Heap;
 use crate::runtime::structs::{get_array_index, put_array_index};
 use crate::{
@@ -899,15 +898,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let cp_index = self.get_u16_args();
                     // extend class's lifetime to avoid borrowing self
                     let class = Arc::clone(&self.frame.class);
-                    let runtime::ConstantPoolInfo::Methodref {
-                        class,
+                    let runtime::ConstantPoolInfo::Methodref(runtime::Methodref {
+                        class_name,
                         name_and_type,
-                    } = class.get_constant(cp_index)
+                        ..
+                    }) = class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
 
-                    let class_to_invoke = except!(self.resolve_class(&class));
+                    let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+                    let class_to_invoke = except!(bootstrap_class_loader.resolve_class(class_name));
+
                     return Next::InvokeSpecial {
                         class: class_to_invoke,
                         name_and_type: name_and_type.clone(),
@@ -915,30 +917,34 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 }
                 inst::INVOKESTATIC => {
                     let cp_index = self.get_u16_args();
-                    let runtime::ConstantPoolInfo::Methodref {
-                        class,
-                        name_and_type,
-                    } = self.frame.class.get_constant(cp_index)
+                    let runtime::ConstantPoolInfo::Methodref(method_ref) =
+                        self.frame.class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {}", cp_index);
                     };
 
+                    let resolve = except!(self.resolve_static_method(method_ref));
+
                     // FIXME: stack vanishing
                     println!(
                         "call {}.{:?}({:?}) from {}.{}",
-                        class.name,
-                        name_and_type.name,
-                        name_and_type.descriptor,
+                        method_ref.class_name,
+                        method_ref.name_and_type.name,
+                        method_ref.name_and_type.descriptor,
                         self.frame.class.class_name,
                         self.frame.method_name
                     );
 
-                    let class_to_invoke = except!(self.resolve_class(class));
+                    let (class_to_invoke, &index) = match &resolve {
+                        MethodResolve::InThisClass(index) => (&self.frame.class, index),
+                        MethodResolve::OtherClass { class, index } => (class, index),
+                    };
+
                     except!(initialize_class(&self.new_vm_env(), &class_to_invoke));
 
                     return Next::InvokeStatic {
-                        class: class_to_invoke,
-                        name_and_type: name_and_type.clone(),
+                        class: Arc::clone(class_to_invoke),
+                        name_and_type: method_ref.name_and_type.clone(),
                     };
                 }
                 inst::INVOKENATIVE => {
@@ -1652,8 +1658,18 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     ) -> NativeResult<FieldResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader.resolve_class(&field_ref.class_name)?;
-        // TODO: maybe exception
-        Ok(resolve_field(&class, field_ref, is_static).expect("field cannot be resolved"))
+        resolve_field(&class, field_ref, is_static)
+            .ok_or_else(|| Exception::new("java/lang/NoSuchFieldError"))
+    }
+
+    fn resolve_static_method(
+        &self,
+        method_ref: &runtime::Methodref,
+    ) -> NativeResult<MethodResolve> {
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let class = bootstrap_class_loader.resolve_class(&method_ref.class_name)?;
+        resolve_static_method(&class, method_ref)
+            .ok_or_else(|| Exception::new("java/lang/NoSuchMethodError"))
     }
 
     fn new_vm_env(&self) -> VmEnv {
