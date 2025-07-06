@@ -1,4 +1,3 @@
-use bitflags::Flags;
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
 use std::{
@@ -14,12 +13,16 @@ use std::{
 use zip::{ZipArchive, read::ZipFile};
 
 use crate::{
-    class::{self, parser},
-    descriptor::FieldType,
+    class::{self, JavaStr, parser},
+    consts::{ClassAccessFlag, MethodAccessFlag},
+    descriptor::{FieldDescriptor, FieldType, MethodDescriptor, parse_field_descriptor},
     runtime,
     runtime::{
-        AttributeInfo, FieldResolve, MethodResolve, NativeResult, VmEnv,
-        class_loader::{resolve_cp_class, resolve_static_field, resolve_static_method_inner},
+        AttributeInfo, FieldResolve, MethodResolve, NativeResult, VtableEntry, VtableIndex,
+        class_loader::{
+            resolve_cp_class, resolve_method_statically_inner, resolve_static_field,
+            resolve_static_method_inner,
+        },
         gen_array_class,
     },
 };
@@ -59,6 +62,10 @@ impl BootstrapClassLoader {
         &self,
         class_name: &str,
     ) -> NativeResult<Arc<runtime::Class>> {
+        if class_name.starts_with('[') {
+            let (_, FieldDescriptor(field_type)) = parse_field_descriptor(class_name).unwrap();
+            return self.resolve_array_class_with_field_type(field_type);
+        }
         let class_cell = Arc::clone(
             self.class_registry
                 .entry(class_name.to_string())
@@ -69,6 +76,29 @@ impl BootstrapClassLoader {
         let class = class_cell.get_or_try_init(|| self.define_class(class_name))?;
 
         Ok(Arc::clone(class))
+    }
+    fn resolve_array_class_with_field_type(
+        &self,
+        filed_type: FieldType,
+    ) -> NativeResult<Arc<runtime::Class>> {
+        let FieldType::Array(element) = filed_type else {
+            panic!("must be array");
+        };
+        match *element {
+            FieldType::Char
+            | FieldType::Double
+            | FieldType::Float
+            | FieldType::Int
+            | FieldType::Long
+            | FieldType::Short
+            | FieldType::Byte
+            | FieldType::Boolean => self.resolve_primitive_array_class(&element),
+
+            FieldType::Object(class_name) => {
+                self.resolve_object_array_class(&self.resolve_class(&class_name)?)
+            }
+            FieldType::Array(_) => self.resolve_array_class_with_field_type(*element),
+        }
     }
 
     pub(in crate::runtime) fn resolve_primitive_array_class(
@@ -124,12 +154,39 @@ impl BootstrapClassLoader {
         self.load_interfaces(&mut class, &class_file.interfaces)?;
 
         Self::resolve_this_class_field_ref(&mut class);
+        Self::build_vtable(&mut class);
 
         let class = Arc::new(class);
         Self::resolve_this_class_field_ref_static(&class);
         Self::resolve_this_class_method_ref_static(&class);
+        Self::resolve_this_class_method_ref(&class);
 
         println!("defined {name}");
+
+        println!("vtable:");
+        for entry in &class.vtable {
+            print!(
+                "{}.{}: ",
+                entry
+                    .root_class
+                    .as_ref()
+                    .map(|c| c.class_name.as_ref())
+                    .unwrap_or(""),
+                entry.name.to_str()
+            );
+            match &entry.index {
+                VtableIndex::InThisClass(index) => {
+                    println!("{index}");
+                }
+                VtableIndex::OtherClass { class, index } => {
+                    println!("{}: {index}", class.class_name);
+                }
+                VtableIndex::OtherInterface { class, index } => {
+                    println!("{}: {index}", class.class_name);
+                }
+            }
+        }
+        println!();
 
         Ok(class)
     }
@@ -149,6 +206,7 @@ impl BootstrapClassLoader {
             .interfaces
             .push(self.resolve_class("java/io/Serializable")?);
         class.array_element_type = ele_class.map(Arc::clone);
+        // TODO: vtable
 
         Ok(Arc::new(class))
     }
@@ -307,6 +365,7 @@ impl BootstrapClassLoader {
             .methods
             .iter()
             .enumerate()
+            .filter(|(_, m)| m.access_flags.contains(MethodAccessFlag::STATIC))
             .map(|(i, method)| ((method.name.as_ref(), &method.descriptor), i))
             .collect();
 
@@ -328,13 +387,220 @@ impl BootstrapClassLoader {
                 // inside this class
                 method_ref
                     .resolve
-                    .set(MethodResolve::InThisClass(index as u16))
+                    .set(MethodResolve::InThisClass {
+                        index,
+                        vtable_index: -1,
+                    })
                     .expect("must be empty now");
             } else if let Some(resolve) = resolve_static_method_inner(class, method_ref, true) {
                 method_ref.resolve.set(resolve).expect("must be empty now");
             }
             // if not found, must be a non-static method, resolve at runtime
         }
+    }
+
+    fn resolve_this_class_method_ref(class: &Arc<runtime::Class>) {
+        let method_map: HashMap<_, _> = class
+            .methods
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.access_flags.contains(MethodAccessFlag::STATIC))
+            .map(|(i, method)| ((method.name.as_ref(), &method.descriptor), i))
+            .collect();
+
+        for cp_in_file in &class.constant_pool {
+            let runtime::ConstantPoolInfo::Methodref(method_ref) = cp_in_file else {
+                continue;
+            };
+            // already resolved (static)
+            if method_ref.resolve.get().is_some() {
+                continue;
+            }
+
+            if method_ref.class_name != class.class_name {
+                // not in this class, to be resolved at runtime
+                continue;
+            }
+            let name_and_type = &method_ref.name_and_type;
+
+            let key = &(name_and_type.name.as_ref(), &name_and_type.descriptor);
+
+            let index = method_map.get(key);
+
+            if let Some(&index) = index {
+                let method = &class.methods[index];
+                let vtable_index = if method.access_flags.contains(MethodAccessFlag::PRIVATE)
+                    || method.access_flags.contains(MethodAccessFlag::FINAL)
+                    || class.access_flags.contains(ClassAccessFlag::FINAL)
+                    || method.name.to_str() == "<init>"
+                {
+                    -1
+                } else {
+                    // find in vtable
+                    // TODO: package private dispatch
+                    class
+                        .vtable
+                        .iter()
+                        .enumerate()
+                        .find(|(_, entry)| {
+                            entry.name == method.name && entry.descriptor == method.descriptor
+                        })
+                        .map(|(index, _)| index as isize)
+                        .unwrap_or(-1)
+                };
+
+                // inside this class
+                method_ref
+                    .resolve
+                    .set(MethodResolve::InThisClass {
+                        index,
+                        vtable_index,
+                    })
+                    .expect("must be empty now");
+            } else if let Some(resolve) = resolve_method_statically_inner(class, method_ref, true) {
+                method_ref.resolve.set(resolve).expect("must be empty now");
+            }
+            // if not found, must be a non-static method, resolve at runtime
+        }
+    }
+
+    fn build_vtable(class: &mut runtime::Class) {
+        if let Some(super_class) = &class.super_class {
+            // super class's vtable goes first
+            class.vtable.extend(super_class.vtable.iter().cloned());
+        }
+        // interface
+        if class.access_flags.contains(ClassAccessFlag::INTERFACE) {
+            // interface will only have Object's vtable
+            return;
+        }
+
+        let mut vtable = mem::take(&mut class.vtable);
+        // instance methods
+        let method_map: HashMap<_, _> = class
+            .methods
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.access_flags.contains(MethodAccessFlag::STATIC))
+            .filter(|(_, m)| !m.access_flags.contains(MethodAccessFlag::PRIVATE))
+            .filter(|(_, m)| m.name.to_str() != "<init>")
+            .map(|(i, method)| ((method.name.to_java_string(), method.descriptor.clone()), i))
+            .collect();
+
+        let mut overrode_methods = HashSet::new();
+
+        for entry in &mut vtable {
+            // check for overrides
+            let (super_class, index) = match &entry.index {
+                VtableIndex::InThisClass(index) => {
+                    // must have super class
+                    let index = *index;
+                    let class = class.super_class.as_ref().unwrap();
+                    entry.index = VtableIndex::OtherClass {
+                        class: Arc::clone(class),
+                        index,
+                    };
+
+                    (class, index)
+                }
+                VtableIndex::OtherClass { class, index } => (class as &_, *index),
+                VtableIndex::OtherInterface { class, index } => (class as &_, *index),
+            };
+
+            entry
+                .root_class
+                .get_or_insert_with(|| Arc::clone(super_class));
+
+            let super_method = &super_class.methods[index];
+
+            // skip non overridable
+            // private and final method will not be in vtable
+            // TODO: check transitive overridable
+            if !super_method.access_flags.contains(MethodAccessFlag::PUBLIC)
+                && !super_method
+                    .access_flags
+                    .contains(MethodAccessFlag::PROTECTED)
+                && super_class.package_name() != class.package_name()
+            {
+                continue;
+            }
+
+            let key = (
+                super_method.name.to_java_string(),
+                super_method.descriptor.clone(),
+            );
+
+            if let Some(&self_index) = method_map.get(&key) {
+                entry.index = VtableIndex::InThisClass(self_index);
+            }
+            overrode_methods.insert(key);
+        }
+
+        // put new methods in the end
+        if !class.access_flags.contains(ClassAccessFlag::FINAL) {
+            for (i, method) in class.methods.iter().enumerate() {
+                if method.access_flags.contains(MethodAccessFlag::FINAL) {
+                    // final method is statically dispatched
+                    continue;
+                }
+                let key = (method.name.to_java_string(), method.descriptor.clone());
+                if !method_map.contains_key(&key) {
+                    continue;
+                }
+                // package private method always has a new entry
+                if overrode_methods.contains(&key)
+                    && (method.access_flags.contains(MethodAccessFlag::PUBLIC)
+                        || method.access_flags.contains(MethodAccessFlag::PROTECTED))
+                {
+                    continue;
+                }
+                vtable.push(VtableEntry {
+                    root_class: None,
+                    name: Arc::clone(&method.name),
+                    descriptor: method.descriptor.clone(),
+                    index: VtableIndex::InThisClass(i),
+                });
+            }
+        }
+
+        // TODO: interface hierarchy
+        // put interface methods
+        for interface in &class.interfaces {
+            for (i, interface_method) in interface.methods.iter().enumerate() {
+                // private/static method is not inheritable
+                if interface_method
+                    .access_flags
+                    .contains(MethodAccessFlag::PRIVATE)
+                {
+                    continue;
+                }
+                if interface_method
+                    .access_flags
+                    .contains(MethodAccessFlag::STATIC)
+                {
+                    continue;
+                }
+                // add default or abstract method if not overrode
+                let key = (
+                    interface_method.name.to_java_string(),
+                    interface_method.descriptor.clone(),
+                );
+                if method_map.contains_key(&key) {
+                    continue;
+                }
+                vtable.push(VtableEntry {
+                    root_class: Some(Arc::clone(interface)),
+                    name: Arc::clone(&interface_method.name),
+                    descriptor: interface_method.descriptor.clone(),
+                    index: VtableIndex::OtherInterface {
+                        class: Arc::clone(interface),
+                        index: i,
+                    },
+                });
+            }
+        }
+
+        class.vtable = vtable;
     }
 }
 
@@ -419,7 +685,7 @@ impl ClassPathModule {
     pub fn new(name: impl Into<String>, base_path: impl Into<PathBuf>) -> Self {
         Self {
             name: name.into(),
-            base_path: base_path.into(),
+            base_path: base_path.into().canonicalize().expect("must be directory"),
         }
     }
 }
@@ -445,10 +711,15 @@ impl ModuleLoader for ClassPathModule {
                                 .and_then(Path::to_str)
                                 .unwrap_or("")
                                 .to_string();
+                            let package_name = dir_name
+                                .strip_prefix(base_path.to_str().expect("must be utf-8"))
+                                .expect("must have base path as prefix")
+                                .to_string();
+
                             packages.insert(
-                                dir_name
-                                    .strip_prefix(base_path.to_str().expect("must be utf-8"))
-                                    .expect("must have base path as prefix")
+                                package_name
+                                    .strip_prefix('/')
+                                    .unwrap_or(&package_name)
                                     .to_string(),
                             );
                         }

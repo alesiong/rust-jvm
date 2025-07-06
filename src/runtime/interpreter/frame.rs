@@ -1,10 +1,10 @@
 use crate::{
     class::JavaStr,
-    consts::MethodAccessFlag,
+    consts::{ClassAccessFlag, MethodAccessFlag},
     descriptor::{FieldType, ReturnType},
     runtime,
     runtime::{
-        CodeAttribute, NativeResult, VmEnv,
+        CodeAttribute, NativeResult, VmEnv, VtableIndex,
         class_loader::initialize_class,
         global::BOOTSTRAP_CLASS_LOADER,
         interpreter::{InterpreterEnv, Next, global, instructions},
@@ -190,13 +190,13 @@ impl Thread<'_> {
     fn new_frame_resolved(
         top_frame: &mut Option<Frame>,
         class: Arc<runtime::Class>,
-        index: u16,
+        index: usize,
         return_address: usize,
         need_this: bool,
     ) {
         let method_info = class
             .methods
-            .get(index as usize)
+            .get(index)
             .unwrap_or_else(|| panic!("method not found {index}"));
         Self::new_frame_with_method_info(
             top_frame,
@@ -371,6 +371,18 @@ impl Thread<'_> {
                     if !is_void {
                         if is_long {
                             print!(" with {}L", unsafe { Variable::get_long(v1, v2) });
+                        } else if let Some(FieldType::Object(cls)) = frame.return_type
+                            && cls == "java/lang/String"
+                        {
+                            let str_ref = unsafe { v1.reference };
+                            let obj = global::HEAP.read().unwrap().get(str_ref);
+                            let bytes_ref = unsafe { obj.get_field(0).reference };
+                            let obj = global::HEAP.read().unwrap().get(bytes_ref);
+                            let len = obj.get_array_size(1);
+                            print!(" with ");
+                            for i in 0..len {
+                                print!("{}", unsafe { obj.get_array_index_raw(i, 1)[0] as char })
+                            }
                         } else {
                             print!(" with {}", unsafe { v1.int });
                         }
@@ -383,19 +395,61 @@ impl Thread<'_> {
                     return Err(exception);
                 }
                 Next::InvokeSpecial {
-                    class,
-                    name_and_type,
+                    static_class,
+                    index,
+                    vtable_index,
+                    is_virtual,
+                    this,
                 } => {
-                    // TODO: resolve method
                     self.top_frame = Some(frame);
-                    Self::new_frame_inner(
-                        &mut self.top_frame,
-                        class,
-                        &name_and_type.name.to_str(),
-                        &name_and_type.descriptor.parameters,
-                        pc + 1,
-                        true,
-                    );
+
+                    if !is_virtual || vtable_index < 0 {
+                        if cfg!(debug_assertions) && is_virtual {
+                            let statically_resolved_method = &static_class.methods[index];
+                            assert!(
+                                statically_resolved_method
+                                    .access_flags
+                                    .contains(MethodAccessFlag::PRIVATE)
+                                    || statically_resolved_method
+                                        .access_flags
+                                        .contains(MethodAccessFlag::FINAL)
+                                    || static_class.access_flags.contains(ClassAccessFlag::FINAL)
+                            );
+                        }
+                        println!("invokespecial {}.{}", static_class.class_name, index);
+                        // invokespecial
+                        Self::new_frame_resolved(
+                            &mut self.top_frame,
+                            static_class,
+                            index,
+                            pc + 1,
+                            true,
+                        );
+                    } else {
+                        let this_obj = global::HEAP.read().unwrap().get(this);
+                        let this_class = this_obj.get_class();
+                        let vtable_entry = &this_class.vtable[vtable_index as usize];
+                        let (class, method) = match &vtable_entry.index {
+                            VtableIndex::InThisClass(index) => {
+                                (this_class, &this_class.methods[*index])
+                            }
+                            VtableIndex::OtherClass { class, index } => {
+                                (class, &class.methods[*index])
+                            }
+                            VtableIndex::OtherInterface { class, index } => {
+                                (class, &class.methods[*index])
+                            }
+                        };
+                        println!("invokevirtual {}.{:?}", this_class.class_name, method.name);
+
+                        Self::new_frame_with_method_info(
+                            &mut self.top_frame,
+                            Arc::clone(&class),
+                            method,
+                            pc + 1,
+                            true,
+                        );
+                    }
                     pc = 0;
                 }
                 Next::InvokeStatic { class, index } => {

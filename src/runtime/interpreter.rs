@@ -3,13 +3,13 @@ pub(crate) mod global;
 mod instructions;
 
 use crate::{
-    class::JavaStr,
-    descriptor::{self, FieldType, MethodDescriptor},
+    descriptor::{self, FieldType, parse_field_descriptor},
     runtime::{
-        self, ArrayType, Class, CpClassInfo, CpNameAndTypeInfo, Exception, FieldResolve,
-        MethodResolve, NativeEnv, NativeResult, NativeVariable, Object, VmEnv,
+        self, ArrayType, Class, CpClassInfo, Exception, FieldResolve, MethodResolve, NativeEnv,
+        NativeResult, NativeVariable, Object, VmEnv,
         class_loader::{
-            get_class_object, initialize_class, intern_string, resolve_field, resolve_static_method,
+            get_class_object, initialize_class, intern_string, resolve_field,
+            resolve_method_statically, resolve_static_method,
         },
         global::BOOTSTRAP_CLASS_LOADER,
         heap::Heap,
@@ -39,12 +39,15 @@ enum Next {
         return_pc: usize,
     },
     InvokeSpecial {
-        class: Arc<Class>,
-        name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
+        static_class: Arc<Class>,
+        index: usize,
+        vtable_index: isize,
+        is_virtual: bool,
+        this: u32,
     },
     InvokeStatic {
         class: Arc<Class>,
-        index: u16,
+        index: usize,
     },
     Exception(Exception),
 }
@@ -885,22 +888,45 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::INVOKESPECIAL | inst::INVOKEVIRTUAL => {
                     let cp_index = self.get_u16_args();
                     // extend class's lifetime to avoid borrowing self
-                    let class = Arc::clone(&self.frame.class);
-                    let runtime::ConstantPoolInfo::Methodref(runtime::Methodref {
-                        class_name,
-                        name_and_type,
-                        ..
-                    }) = class.get_constant(cp_index)
+                    let runtime::ConstantPoolInfo::Methodref(method_ref) =
+                        self.frame.class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {cp_index}");
                     };
 
-                    let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-                    let class_to_invoke = except!(bootstrap_class_loader.resolve_class(class_name));
+                    let param_size = method_ref.name_and_type.descriptor.parameters.len();
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let this = unsafe {
+                        self.frame.stack[self.frame.stack.len() - param_size - 1].reference
+                    };
+                    if this == 0 {
+                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                    }
+
+                    let resolve = except!(
+                        method_ref
+                            .resolve
+                            .get_or_try_init(|| self.resolve_method_statically(method_ref))
+                    );
+
+                    let (static_class, &index, &vtable_index) = match &resolve {
+                        MethodResolve::InThisClass {
+                            index,
+                            vtable_index,
+                        } => (&self.frame.class, index, vtable_index),
+                        MethodResolve::OtherClass {
+                            class,
+                            index,
+                            vtable_index,
+                        } => (class, index, vtable_index),
+                    };
 
                     return Next::InvokeSpecial {
-                        class: class_to_invoke,
-                        name_and_type: name_and_type.clone(),
+                        static_class: Arc::clone(static_class),
+                        index,
+                        vtable_index,
+                        is_virtual: op == inst::INVOKEVIRTUAL,
+                        this,
                     };
                 }
                 inst::INVOKESTATIC => {
@@ -911,11 +937,15 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         panic!("invalid constant type {cp_index}");
                     };
 
-                    let resolve = except!(self.resolve_static_method(method_ref));
+                    let resolve = except!(
+                        method_ref
+                            .resolve
+                            .get_or_try_init(|| self.resolve_static_method(method_ref))
+                    );
 
                     let (class_to_invoke, &index) = match &resolve {
-                        MethodResolve::InThisClass(index) => (&self.frame.class, index),
-                        MethodResolve::OtherClass { class, index } => (class, index),
+                        MethodResolve::InThisClass { index, .. } => (&self.frame.class, index),
+                        MethodResolve::OtherClass { class, index, .. } => (class, index),
                     };
 
                     except!(initialize_class(&self.new_vm_env(), class_to_invoke));
@@ -1234,11 +1264,13 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let mut dims = vec![0; dimensions as usize];
         for i in 0..dimensions {
             let dim = self.pop_int();
-            debug_assert!(dim >= 0);
+            if dim < 0 {
+                return Err(Exception::new("java/lang/NegativeArraySizeException"));
+            }
             dims[(dimensions - i - 1) as usize] = dim;
         }
 
-        // TODO: this is array type with dim >= dimensions
+        // this is array type with dim >= dimensions
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {cp_index}");
@@ -1247,23 +1279,44 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             cp_info.name.starts_with(&"[".repeat(dimensions as usize)),
             "array class dimension not enough"
         );
+        let id = Self::new_multi_object_array_dim(
+            &cp_info.name,
+            &dims,
+            &mut self.heap.write().unwrap(),
+        )?;
 
-        let new_class = self.resolve_class(cp_info)?;
-
-        let count = self.pop_int();
-        if count < 0 {
-            return Err(Exception::new("java/lang/NegativeArraySizeException"));
-        }
-
-        // build array class
-        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        let new_class = bootstrap_class_loader.resolve_object_array_class(&new_class)?;
-
-        let mut heap = self.heap.write().unwrap();
-
-        let id = heap.allocate_array::<u32>(count as _, new_class);
         self.frame.stack.push(Variable { reference: id });
         Ok(())
+    }
+
+    fn new_multi_object_array_dim(
+        arr_class_name: &str,
+        dim: &[i32],
+        heap: &mut Heap,
+    ) -> NativeResult<u32> {
+        let element_class_name = &arr_class_name[1..];
+        let (_, filed_type) =
+            parse_field_descriptor(element_class_name).expect("invalid arr class name");
+
+        let loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let class = loader.resolve_class(arr_class_name)?;
+
+        let count = dim[0] as usize;
+        let id = heap.allocate_array::<u32>(count, class);
+        let array_obj = heap.get(id);
+        for i in 0..count {
+            if dim.len() == 1 {
+                let size = filed_type.0.get_field_type_size();
+                unsafe { array_obj.put_array_index_raw(i, &vec![0; size], size) }
+            } else {
+                let element =
+                    Self::new_multi_object_array_dim(element_class_name, &dim[1..], heap)?;
+                unsafe {
+                    put_array_index(array_obj.as_ref(), i, element);
+                }
+            }
+        }
+        Ok(id)
     }
 
     fn put_field(&mut self) -> NativeResult<()> {
@@ -1283,9 +1336,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
         let this_obj = self.heap.read().unwrap().get(this);
         unsafe {
-            this_obj.put_field(index as usize, v1);
+            this_obj.put_field(index, v1);
             if let Some(v2) = v2 {
-                this_obj.put_field((index + 1) as usize, v2);
+                this_obj.put_field(index + 1, v2);
             }
         }
 
@@ -1313,7 +1366,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         Ok(())
     }
 
-    fn resolve_instance_field(&mut self) -> NativeResult<(u16, bool)> {
+    fn resolve_instance_field(&mut self) -> NativeResult<(usize, bool)> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Fieldref(
             field_ref @ runtime::Fieldref {
@@ -1358,7 +1411,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         Ok(())
     }
 
-    fn resolve_static_field(&mut self) -> Result<(Arc<Class>, u16, bool), Exception> {
+    fn resolve_static_field(&mut self) -> Result<(Arc<Class>, usize, bool), Exception> {
         let cp_index = self.get_u16_args();
         let runtime::ConstantPoolInfo::Fieldref(
             field_ref @ runtime::Fieldref {
@@ -1507,7 +1560,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
             args.push(arg);
         }
 
-        let method = NATIVE_FUNCTIONS
+        let method = *NATIVE_FUNCTIONS
             .get(&(class_name, method_name, param_descriptor))
             .unwrap();
 
@@ -1645,6 +1698,16 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader.resolve_class(&method_ref.class_name)?;
         resolve_static_method(&class, method_ref)
+            .ok_or_else(|| Exception::new("java/lang/NoSuchMethodError"))
+    }
+
+    fn resolve_method_statically(
+        &self,
+        method_ref: &runtime::Methodref,
+    ) -> NativeResult<MethodResolve> {
+        let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+        let class = bootstrap_class_loader.resolve_class(&method_ref.class_name)?;
+        resolve_method_statically(&class, method_ref)
             .ok_or_else(|| Exception::new("java/lang/NoSuchMethodError"))
     }
 

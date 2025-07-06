@@ -8,9 +8,7 @@ use crate::{
     runtime::{
         self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValue, ElementValuePair,
         FieldInfo, FieldResolve, Fieldref, LocalVariable, MethodInfo, Module, ModuleExport,
-        NativeResult, Variable, VmEnv,
-        global::{BOOTSTRAP_CLASS_LOADER, STRING_TABLE},
-        structs::ClinitStatus,
+        NativeResult, Variable, VmEnv, global::STRING_TABLE, structs::ClinitStatus,
     },
 };
 use nom::{
@@ -31,10 +29,9 @@ use std::{
 mod bootstrap;
 
 use crate::runtime::{
-    Class, MethodResolve, Methodref,
-    famous_classes::{BYTE_ARRAY_CLASS, CLASS_CLASS, STRING_CLASS},
+    MethodResolve, Methodref,
+    famous_classes::{CLASS_CLASS, STRING_CLASS},
     global::{CLASS_TABLE, HEAP},
-    heap::Heap,
 };
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
@@ -75,6 +72,7 @@ pub fn parse_class(class_file: &class::Class) -> runtime::Class {
         array_element_type: None,
         static_fields: static_fields_var,
         clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::NotInit)),
+        vtable: vec![],
     }
 }
 
@@ -93,6 +91,7 @@ pub fn gen_array_class(class_name: Arc<str>) -> runtime::Class {
         array_element_type: None,
         // array has no clinit
         clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::Init)),
+        vtable: vec![],
     }
 }
 
@@ -887,6 +886,7 @@ fn resolve_static_method_inner(
                 return Some(MethodResolve::OtherClass {
                     class: Arc::clone(class),
                     index: id as _,
+                    vtable_index: -1,
                 });
             }
         }
@@ -909,6 +909,82 @@ pub(in crate::runtime) fn resolve_static_method(
     method_ref: &Methodref,
 ) -> Option<MethodResolve> {
     resolve_static_method_inner(class, method_ref, false)
+}
+
+fn resolve_method_in_class_only(
+    class: &Arc<runtime::Class>,
+    method_ref: &Methodref,
+) -> Option<MethodResolve> {
+    for (index, method) in class.methods.iter().enumerate() {
+        if method.access_flags.contains(MethodAccessFlag::STATIC) {
+            continue;
+        }
+        if method.name == method_ref.name_and_type.name
+            && method.descriptor == method_ref.name_and_type.descriptor
+        {
+            // TODO: duplicate
+            let vtable_index = if method.access_flags.contains(MethodAccessFlag::PRIVATE)
+                || method.access_flags.contains(MethodAccessFlag::FINAL)
+                || class.access_flags.contains(ClassAccessFlag::FINAL)
+                || method.name.to_str() == "<init>"
+            {
+                -1
+            } else {
+                // find in vtable
+                // TODO: package private dispatch
+                class
+                    .vtable
+                    .iter()
+                    .enumerate()
+                    .find(|(_, entry)| {
+                        entry.name == method.name && entry.descriptor == method.descriptor
+                    })
+                    .map(|(index, _)| index as isize)
+                    .unwrap_or(-1)
+            };
+
+            return Some(MethodResolve::OtherClass {
+                class: Arc::clone(class),
+                index,
+                vtable_index,
+            });
+        }
+    }
+    if let Some(super_class) = &class.super_class {
+        if let Some(resolve) = resolve_method_in_class_only(super_class, method_ref) {
+            return Some(resolve);
+        }   
+    }
+    None
+}
+
+fn resolve_method_statically_inner(
+    class: &Arc<runtime::Class>,
+    method_ref: &Methodref,
+    skip_this: bool,
+) -> Option<MethodResolve> {
+    // TODO: signature polymorphic method
+    if !skip_this {
+        if let Some(resolve) = resolve_method_in_class_only(class, method_ref) {
+            return Some(resolve);
+        }
+    }
+
+    if let Some(super_class) = &class.super_class {
+        if let Some(resolve) = resolve_method_in_class_only(super_class, method_ref) {
+            return Some(resolve);
+        }
+    }
+    // TODO: maximally-specific superinterface
+
+    None
+}
+
+pub(in crate::runtime) fn resolve_method_statically(
+    class: &Arc<runtime::Class>,
+    method_ref: &Methodref,
+) -> Option<MethodResolve> {
+    resolve_method_statically_inner(class, method_ref, false)
 }
 
 pub(in crate::runtime) fn initialize_class(
@@ -1044,7 +1120,7 @@ pub(in crate::runtime) fn intern_string(str: &Arc<JavaStr>) -> u32 {
     )
 }
 
-pub(in crate::runtime) fn get_class_object(class: Arc<Class>) -> NativeResult<u32> {
+pub(in crate::runtime) fn get_class_object(class: Arc<runtime::Class>) -> NativeResult<u32> {
     let class_class = CLASS_CLASS.get().expect("class class should be defined");
     assert_eq!(
         class_class.clinit_call.lock().get(),

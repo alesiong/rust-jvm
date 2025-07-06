@@ -1,7 +1,7 @@
 use crate::{
     descriptor::FieldType,
     runtime::{
-        Exception, NativeEnv, NativeResult, NativeVariable, Object,
+        Exception, NativeEnv, NativeResult, NativeVariable,
         inheritance::{get_array_type, is_array_assignable_to},
         native::NATIVE_FUNCTIONS,
         structs::get_array_index,

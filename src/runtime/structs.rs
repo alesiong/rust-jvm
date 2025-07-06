@@ -34,12 +34,29 @@ pub struct Class {
     // only for arrays of reference type
     pub(crate) array_element_type: Option<Arc<Class>>,
     pub(in crate::runtime) clinit_call: parking_lot::ReentrantMutex<Cell<ClinitStatus>>,
+    // contains all methods inherited from super classes, and default methods from super interfaces
+    pub(crate) vtable: Vec<VtableEntry>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum ClinitStatus {
     NotInit,
     Init,
+}
+
+#[derive(Debug, Clone)]
+pub struct VtableEntry {
+    pub(in crate::runtime) root_class: Option<Arc<Class>>,
+    pub(in crate::runtime) name: Arc<JavaStr>,
+    pub(in crate::runtime) descriptor: MethodDescriptor,
+    pub(in crate::runtime) index: VtableIndex,
+}
+
+#[derive(Debug, Clone)]
+pub enum VtableIndex {
+    InThisClass(usize),
+    OtherClass { class: Arc<Class>, index: usize },
+    OtherInterface { class: Arc<Class>, index: usize },
 }
 
 impl Class {
@@ -63,16 +80,23 @@ impl Class {
         &self.constant_pool[index as usize - 1]
     }
 
-    pub(super) fn get_static_field(&self, index: u16) -> Variable {
-        *self.static_fields[index as usize].read().unwrap()
+    pub(super) fn get_static_field(&self, index: usize) -> Variable {
+        *self.static_fields[index].read().unwrap()
     }
 
-    pub(super) fn set_static_field(&self, index: u16, value: Variable) {
-        *self.static_fields[index as usize].write().unwrap() = value;
+    pub(super) fn set_static_field(&self, index: usize, value: Variable) {
+        *self.static_fields[index].write().unwrap() = value;
     }
 
     pub(super) fn is_array(&self) -> bool {
         self.class_name.starts_with("[")
+    }
+
+    pub(super) fn package_name(&self) -> &str {
+        let Some((package, _)) = self.class_name.rsplit_once('/') else {
+            return "";
+        };
+        package
     }
 }
 
@@ -82,7 +106,7 @@ pub struct FieldInfo {
     pub(crate) name: Arc<JavaStr>,
     pub(crate) descriptor: FieldDescriptor,
     pub(crate) attributes: Vec<AttributeInfo>,
-    pub(crate) index: u16,
+    pub(crate) index: usize,
 }
 
 #[derive(Debug)]

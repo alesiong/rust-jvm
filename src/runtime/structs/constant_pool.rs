@@ -81,12 +81,12 @@ impl Fieldref {
 
 #[derive(Debug, Clone)]
 pub(crate) enum FieldResolve {
-    InThisClass(u16),
-    OtherClass { class: Arc<Class>, index: u16 },
+    InThisClass(usize),
+    OtherClass { class: Arc<Class>, index: usize },
 }
 
 impl FieldResolve {
-    pub(crate) fn get_index(&self) -> u16 {
+    pub(crate) fn get_index(&self) -> usize {
         match self {
             FieldResolve::InThisClass(index) => *index,
             FieldResolve::OtherClass { index, .. } => *index,
@@ -103,14 +103,21 @@ pub struct Methodref {
 
 #[derive(Debug, Clone)]
 pub(crate) enum MethodResolve {
-    InThisClass(u16),
-    OtherClass { class: Arc<Class>, index: u16 },
+    InThisClass {
+        index: usize,
+        vtable_index: isize,
+    },
+    OtherClass {
+        class: Arc<Class>,
+        index: usize,
+        vtable_index: isize,
+    },
 }
 
 impl MethodResolve {
-    pub(crate) fn get_index(&self) -> u16 {
+    pub(crate) fn get_index(&self) -> usize {
         match self {
-            MethodResolve::InThisClass(index) => *index,
+            MethodResolve::InThisClass { index, .. } => *index,
             MethodResolve::OtherClass { index, .. } => *index,
         }
     }
