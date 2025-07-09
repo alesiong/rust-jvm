@@ -13,15 +13,15 @@ use std::{
 use zip::{ZipArchive, read::ZipFile};
 
 use crate::{
-    class::{self, JavaStr, parser},
+    class::{self, parser},
     consts::{ClassAccessFlag, MethodAccessFlag},
-    descriptor::{FieldDescriptor, FieldType, MethodDescriptor, parse_field_descriptor},
+    descriptor::{FieldDescriptor, FieldType, parse_field_descriptor},
     runtime,
     runtime::{
         AttributeInfo, FieldResolve, MethodResolve, NativeResult, VtableEntry, VtableIndex,
         class_loader::{
-            resolve_cp_class, resolve_method_statically_inner, resolve_static_field,
-            resolve_static_method_inner,
+            resolve_cp_class, resolve_from_vtable, resolve_method_statically_inner,
+            resolve_static_field, resolve_static_method_inner,
         },
         gen_array_class,
     },
@@ -429,25 +429,7 @@ impl BootstrapClassLoader {
 
             if let Some(&index) = index {
                 let method = &class.methods[index];
-                let vtable_index = if method.access_flags.contains(MethodAccessFlag::PRIVATE)
-                    || method.access_flags.contains(MethodAccessFlag::FINAL)
-                    || class.access_flags.contains(ClassAccessFlag::FINAL)
-                    || method.name.to_str() == "<init>"
-                {
-                    -1
-                } else {
-                    // find in vtable
-                    // TODO: package private dispatch
-                    class
-                        .vtable
-                        .iter()
-                        .enumerate()
-                        .find(|(_, entry)| {
-                            entry.name == method.name && entry.descriptor == method.descriptor
-                        })
-                        .map(|(index, _)| index as isize)
-                        .unwrap_or(-1)
-                };
+                let vtable_index = resolve_from_vtable(class, method);
 
                 // inside this class
                 method_ref

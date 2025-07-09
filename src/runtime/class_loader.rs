@@ -7,8 +7,11 @@ use crate::{
     },
     runtime::{
         self, Annotation, Const, CpClassInfo, CpNameAndTypeInfo, ElementValue, ElementValuePair,
-        FieldInfo, FieldResolve, Fieldref, LocalVariable, MethodInfo, Module, ModuleExport,
-        NativeResult, Variable, VmEnv, global::STRING_TABLE, structs::ClinitStatus,
+        FieldInfo, FieldResolve, Fieldref, LocalVariable, MethodInfo, MethodResolve, Methodref,
+        Module, ModuleExport, NativeResult, Variable, VmEnv,
+        famous_classes::{CLASS_CLASS, STRING_CLASS},
+        global::{CLASS_TABLE, HEAP, STRING_TABLE},
+        structs::ClinitStatus,
     },
 };
 use nom::{
@@ -28,11 +31,6 @@ use std::{
 
 mod bootstrap;
 
-use crate::runtime::{
-    MethodResolve, Methodref,
-    famous_classes::{CLASS_CLASS, STRING_CLASS},
-    global::{CLASS_TABLE, HEAP},
-};
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -919,29 +917,9 @@ fn resolve_method_in_class_only(
         if method.access_flags.contains(MethodAccessFlag::STATIC) {
             continue;
         }
-        if method.name == method_ref.name_and_type.name
-            && method.descriptor == method_ref.name_and_type.descriptor
-        {
+        if method_ref.is_signature_equal(method) {
             // TODO: duplicate
-            let vtable_index = if method.access_flags.contains(MethodAccessFlag::PRIVATE)
-                || method.access_flags.contains(MethodAccessFlag::FINAL)
-                || class.access_flags.contains(ClassAccessFlag::FINAL)
-                || method.name.to_str() == "<init>"
-            {
-                -1
-            } else {
-                // find in vtable
-                // TODO: package private dispatch
-                class
-                    .vtable
-                    .iter()
-                    .enumerate()
-                    .find(|(_, entry)| {
-                        entry.name == method.name && entry.descriptor == method.descriptor
-                    })
-                    .map(|(index, _)| index as isize)
-                    .unwrap_or(-1)
-            };
+            let vtable_index = resolve_from_vtable(class, method);
 
             return Some(MethodResolve::OtherClass {
                 class: Arc::clone(class),
@@ -953,9 +931,29 @@ fn resolve_method_in_class_only(
     if let Some(super_class) = &class.super_class {
         if let Some(resolve) = resolve_method_in_class_only(super_class, method_ref) {
             return Some(resolve);
-        }   
+        }
     }
     None
+}
+
+fn resolve_from_vtable(class: &Arc<runtime::Class>, method: &MethodInfo) -> isize {
+    if method.access_flags.contains(MethodAccessFlag::PRIVATE)
+        || method.access_flags.contains(MethodAccessFlag::FINAL)
+        || class.access_flags.contains(ClassAccessFlag::FINAL)
+        || method.name.to_str() == "<init>"
+    {
+        -1
+    } else {
+        // find in vtable
+        // TODO: package private dispatch
+        class
+            .vtable
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == method.name && entry.descriptor == method.descriptor)
+            .map(|(index, _)| index as isize)
+            .unwrap_or(-1)
+    }
 }
 
 fn resolve_method_statically_inner(

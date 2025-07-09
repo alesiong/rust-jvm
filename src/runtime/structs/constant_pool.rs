@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     class::JavaStr,
     descriptor::{FieldDescriptor, MethodDescriptor},
-    runtime::{Class, NativeResult},
+    runtime::{Class, MethodInfo, NativeResult},
 };
 
 #[derive(Debug)]
@@ -99,6 +99,13 @@ pub struct Methodref {
     pub(crate) class_name: Arc<str>,
     pub(crate) name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     pub(crate) resolve: once_cell::sync::OnceCell<MethodResolve>,
+}
+
+impl Methodref {
+    pub fn is_signature_equal(&self, method_info: &MethodInfo) -> bool {
+        self.name_and_type.name == method_info.name
+            && self.name_and_type.descriptor == method_info.descriptor
+    }
 }
 
 #[derive(Debug, Clone)]
