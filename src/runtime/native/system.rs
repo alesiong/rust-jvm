@@ -74,11 +74,8 @@ fn native_system_arraycopy(env: NativeEnv) -> NativeResult<Option<NativeVariable
         }
     }
 
-    // TODO: support special object
     let real_src = unsafe {
-        src.as_heap_object()
-            .expect("must be array")
-            .get_u8_array()
+        src.get_u8_array_const()
             .add(src_pos as usize * src_ele_size)
     };
     let real_dest = unsafe {

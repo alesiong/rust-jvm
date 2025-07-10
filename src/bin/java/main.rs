@@ -11,7 +11,6 @@ fn main() {
         "data/test/",
     );
 
-    // TODO: load main class
     let mut main_thread = runtime::Thread::new(1024);
     main_thread.new_main_frame(
         "D",

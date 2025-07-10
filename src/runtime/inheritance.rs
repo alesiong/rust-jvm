@@ -61,6 +61,7 @@ pub(in crate::runtime) fn is_same_or_sub_class_of(
     source: &Arc<Class>,
     target: &Arc<Class>,
 ) -> bool {
+    // TODO: only if same class loader
     if source.class_name == target.class_name {
         return true;
     }

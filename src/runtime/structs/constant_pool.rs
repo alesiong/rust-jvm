@@ -34,7 +34,6 @@ pub enum ConstantPoolInfo {
 #[derive(Debug)]
 pub struct CpClassInfo {
     pub(crate) name: Arc<str>,
-    // TODO: array
     pub(crate) class: once_cell::sync::OnceCell<Arc<Class>>,
 }
 

@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicU32, Ordering::Relaxed},
     },
 };
+use crate::runtime::structs::ObjectMonitor;
 
 pub struct ClassTable {
     pub(in crate::runtime) map: HashMap<Arc<str>, u32>,
@@ -25,6 +26,7 @@ impl ClassTable {
 #[derive(Debug)]
 pub struct SpecialClassObject {
     pub(in crate::runtime) class: Arc<Class>,
+    pub(in crate::runtime) monitor: ObjectMonitor,
     pub(in crate::runtime) name_str: AtomicU32,
     pub(super) package_name_str: AtomicU32,
 }
@@ -87,6 +89,10 @@ impl Object for SpecialClassObject {
 
     fn get_array_size(&self, _element_size: usize) -> usize {
         panic!("not array");
+    }
+
+    fn get_monitor(&self) -> &ObjectMonitor {
+        &self.monitor
     }
 }
 

@@ -1022,7 +1022,7 @@ pub(in crate::runtime) fn initialize_class(
         let mut init_thread = env.get_thread().new_native_frame_group(None);
         init_thread.new_frame(
             Arc::clone(class),
-            &clinit.name.to_str(),
+            &clinit.name,
             &clinit.descriptor.parameters,
             0,
         );

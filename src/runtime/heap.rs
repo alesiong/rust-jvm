@@ -1,6 +1,7 @@
 use crate::runtime::{
     ArrayType, Class, Object, SpecialStringObject, StringTable, StringTableEntry, Variable,
     heap::reflection::{ClassTable, SpecialClassObject},
+    structs::ObjectMonitor,
 };
 use std::{
     alloc::{Layout, alloc},
@@ -66,6 +67,7 @@ impl Heap {
         let ptr = std::ptr::slice_from_raw_parts_mut(ptr, size * size_of::<T>()) as *mut HeapObject;
         unsafe {
             addr_of_mut!((*ptr).class).write(class);
+            addr_of_mut!((*ptr).monitor).write(ObjectMonitor::default());
         }
         let slice_ptr = unsafe { addr_of_mut!((*ptr).fields_or_array) as *mut T };
 
@@ -119,6 +121,7 @@ impl Heap {
         let ptr = std::ptr::slice_from_raw_parts_mut(ptr, u8_size) as *mut HeapObject;
         unsafe {
             addr_of_mut!((*ptr).class).write(Arc::clone(&obj.class));
+            addr_of_mut!((*ptr).monitor).write(ObjectMonitor::default());
         }
 
         unsafe {
@@ -151,6 +154,7 @@ impl Heap {
         );
 
         let bytes_obj = Box::new(SpecialStringObject::Bytes {
+            monitor: ObjectMonitor::new(),
             bytes: Arc::clone(&string),
         });
         let bytes_id = allocate_id_for_obj(
@@ -160,6 +164,7 @@ impl Heap {
         ) | Self::MAX_OBJECT_ID;
 
         let string_obj = Box::new(SpecialStringObject::String {
+            monitor: ObjectMonitor::new(),
             bytes_id,
             bytes: Arc::clone(&string),
             hash: 0,
@@ -196,6 +201,7 @@ impl Heap {
 
         let class_obj = Box::new(SpecialClassObject {
             class,
+            monitor: ObjectMonitor::default(),
             name_str: Default::default(),
             package_name_str: Default::default(),
         });
@@ -243,6 +249,7 @@ fn allocate_id_for_obj<T: ?Sized>(
 #[derive(Debug)]
 pub(in crate::runtime) struct HeapObject {
     class: Arc<Class>,
+    monitor: ObjectMonitor,
     // fields: [Variable]
     // array: [i8], [i16], etc.
     fields_or_array: UnsafeCell<[u8]>,
@@ -308,6 +315,14 @@ impl Object for Box<HeapObject> {
         );
 
         u8_size / element_size
+    }
+
+    unsafe fn get_u8_array_const(&self) -> *const u8 {
+        self.get_u8_array() as *const u8
+    }
+
+    fn get_monitor(&self) -> &ObjectMonitor {
+        &self.monitor
     }
 }
 

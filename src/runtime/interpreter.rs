@@ -6,14 +6,14 @@ use crate::{
     descriptor::{self, FieldType, parse_field_descriptor},
     runtime::{
         self, ArrayType, Class, CpClassInfo, Exception, FieldResolve, MethodResolve, NativeEnv,
-        NativeResult, NativeVariable, Object, VmEnv,
+        NativeResult, NativeVariable, VmEnv,
         class_loader::{
             get_class_object, initialize_class, intern_string, resolve_field,
             resolve_method_statically, resolve_static_method,
         },
         global::BOOTSTRAP_CLASS_LOADER,
         heap::Heap,
-        inheritance::{get_array_len, get_array_type},
+        inheritance::{get_array_len, get_array_type, is_same_or_sub_class_of},
         native::NATIVE_FUNCTIONS,
         structs::{get_array_index, put_array_index},
     },
@@ -310,11 +310,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                 inst::LDC => {
                     let index = self.get_u8_args() as u16;
-                    self.ldc(index);
+                    except!(self.ldc(index));
                 }
                 inst::LDC_W => {
                     let index = self.get_u16_args();
-                    self.ldc(index);
+                    except!(self.ldc(index));
                 }
                 inst::LDC2_W => {
                     let index = self.get_u16_args();
@@ -853,7 +853,6 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     except!(self.new_multi_object_array());
                 }
 
-                // TODO: check static / instance field
                 inst::PUTFIELD => {
                     except!(self.put_field());
                 }
@@ -869,22 +868,47 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::CHECKCAST => {
                     // TODO: do real check
                     let cp_index = self.get_u16_args();
+                    let runtime::ConstantPoolInfo::Class(cp_class) =
+                        self.frame.class.get_constant(cp_index)
+                    else {
+                        panic!("invalid constant type {cp_index}");
+                    };
+                    except!(self.resolve_class(cp_class));
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let obj_ref = unsafe { self.frame.stack.last().unwrap().reference };
+                    if obj_ref != 0 {
+                        let class = Arc::clone(self.heap.read().unwrap().get(obj_ref).get_class());
+                        // TODO: array, interface
+                        if !is_same_or_sub_class_of(&class, cp_class.class.get().unwrap()) {
+                            return Next::Exception(Exception::new("java/lang/ClassCastException"));
+                        }
+                    }
                 }
                 inst::INSTANCEOF => {
                     let cp_index = self.get_u16_args();
+                    let runtime::ConstantPoolInfo::Class(cp_class) =
+                        self.frame.class.get_constant(cp_index)
+                    else {
+                        panic!("invalid constant type {cp_index}");
+                    };
+                    except!(self.resolve_class(cp_class));
                     // SAFETY: rely on class file checking to ensure correct type
                     let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
                     if obj_ref == 0 {
                         self.push_int(0);
                     } else {
-                        // TODO: do real check
-                        self.push_int(0);
+                        let class = Arc::clone(self.heap.read().unwrap().get(obj_ref).get_class());
+                        // TODO: array, interface
+                        if is_same_or_sub_class_of(&class, cp_class.class.get().unwrap()) {
+                            self.push_int(1);
+                        } else {
+                            self.push_int(0);
+                        }
                     }
                 }
 
                 // call
-                // TODO: invokevirtual should lookup vtable
-                //  do monitor ops for synchronized
+                // TODO: do monitor ops for synchronized
                 inst::INVOKESPECIAL | inst::INVOKEVIRTUAL => {
                     let cp_index = self.get_u16_args();
                     // extend class's lifetime to avoid borrowing self
@@ -984,6 +1008,33 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
                 inst::WIDE => {
                     wide = true;
+                }
+
+                inst::MONITORENTER => {
+                    // TODO: support sync methods
+                    // TODO: monitor enter/exit on Object.wait etc
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if obj_ref == 0 {
+                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                    }
+                    let obj = self.heap.read().unwrap().get(obj_ref);
+                    obj.get_monitor().enter();
+                }
+                inst::MONITOREXIT => {
+                    // TODO: support sync methods
+                    // SAFETY: rely on class file checking to ensure correct type
+                    let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if obj_ref == 0 {
+                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                    }
+                    let obj = self.heap.read().unwrap().get(obj_ref);
+                    // TODO:
+                    //  Otherwise, if the thread that executes monitorexit is not the owner of the monitor associated with the instance referenced by objectref, monitorexit throws an IllegalMonitorStateException.
+                    //  Otherwise, if the Java Virtual Machine implementation enforces the rules on structured locking described in §2.11.10 and if the second of those rules is violated by the execution of this monitorexit instruction, then monitorexit throws an IllegalMonitorStateException.
+
+                    // TODO: check
+                    unsafe { obj.get_monitor().exit() }
                 }
 
                 inst::NOP => {}
@@ -1234,7 +1285,6 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
     fn new_object_array(&mut self) -> NativeResult<()> {
         let cp_index = self.get_u16_args();
-        // TODO: support array type, e.g. [I, [Ljava/lang/String;
         let runtime::ConstantPoolInfo::Class(cp_info) = self.frame.class.get_constant(cp_index)
         else {
             panic!("invalid constant type {cp_index}");
@@ -1438,7 +1488,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     }
 
     #[inline]
-    fn ldc(&mut self, index: u16) {
+    fn ldc(&mut self, index: u16) -> NativeResult<()> {
         match self.frame.class.get_constant(index) {
             runtime::ConstantPoolInfo::Integer(i) => self.iconst(*i),
             runtime::ConstantPoolInfo::Float(f) => self.fconst(*f),
@@ -1448,9 +1498,8 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 });
             }
             runtime::ConstantPoolInfo::Class(class_info) => {
-                // TODO: unwrap
-                let class = self.resolve_class(class_info).unwrap();
-                let id = get_class_object(class).unwrap();
+                let class = self.resolve_class(class_info)?;
+                let id = get_class_object(class)?;
                 self.frame.stack.push(Variable { reference: id });
             }
             runtime::ConstantPoolInfo::MethodHandle => todo!(),
@@ -1460,6 +1509,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 panic!("ldc error, invalid constant type");
             }
         }
+        Ok(())
     }
 
     #[inline]

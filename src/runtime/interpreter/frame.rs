@@ -155,27 +155,35 @@ impl Thread<'_> {
         param_descriptor: &[FieldType],
     ) {
         let loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
-        // TODO: unwrap
-        let main_class = loader.resolve_class(main_class).unwrap();
+        let main_class = loader
+            .resolve_class(main_class)
+            .expect("cannot load main class");
         initialize_class(&VmEnv::new(self, &global::HEAP), &main_class).unwrap();
-        self.new_frame(main_class, method_name, param_descriptor, 0);
+        self.new_frame(
+            main_class,
+            &JavaStr::from_str(method_name),
+            param_descriptor,
+            0,
+        );
     }
-    pub fn new_frame(
+    pub(in crate::runtime) fn new_frame(
         &mut self,
         class: Arc<runtime::Class>,
-        // TODO: change to JavaStr
-        method_name: &str,
+        method_name: &JavaStr,
         param_descriptor: &[FieldType],
         return_address: usize,
     ) {
-        Self::new_frame_inner(
-            &mut self.top_frame,
-            class,
-            method_name,
-            param_descriptor,
+        let top_frame = &mut self.top_frame;
+        let Some(method_info) = class.resolve_method(method_name, param_descriptor) else {
+            panic!("{method_name:?}");
+        };
+        Self::new_frame_with_method_info(
+            top_frame,
+            Arc::clone(&class),
+            method_info,
             return_address,
             false,
-        )
+        );
     }
 
     pub fn new_native_frame_group(&self, frame: Option<Frame>) -> Thread<'_> {
@@ -198,28 +206,6 @@ impl Thread<'_> {
             .methods
             .get(index)
             .unwrap_or_else(|| panic!("method not found {index}"));
-        Self::new_frame_with_method_info(
-            top_frame,
-            Arc::clone(&class),
-            method_info,
-            return_address,
-            need_this,
-        );
-    }
-
-    fn new_frame_inner(
-        top_frame: &mut Option<Frame>,
-        class: Arc<runtime::Class>,
-        method_name: &str,
-        param_descriptor: &[FieldType],
-        return_address: usize,
-        need_this: bool,
-    ) {
-        let Some(method_info) =
-            class.resolve_method(&JavaStr::from_str(method_name), param_descriptor)
-        else {
-            panic!("method not found: {method_name}");
-        };
         Self::new_frame_with_method_info(
             top_frame,
             Arc::clone(&class),

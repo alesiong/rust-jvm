@@ -4,6 +4,7 @@ use crate::{
         Class, Object, Variable,
         famous_classes::{BYTE_ARRAY_CLASS, STRING_CLASS},
         heap::SpecialObject,
+        structs::ObjectMonitor,
     },
 };
 use std::{collections::HashMap, sync::Arc};
@@ -31,9 +32,11 @@ pub struct StringTableEntry {
 #[derive(Debug, Clone)]
 pub enum SpecialStringObject {
     Bytes {
+        monitor: ObjectMonitor,
         bytes: Arc<[u8]>,
     },
     String {
+        monitor: ObjectMonitor,
         bytes_id: u32,
         bytes: Arc<[u8]>,
         hash: i32,
@@ -53,16 +56,16 @@ impl Object for SpecialStringObject {
         }
     }
 
-    unsafe fn put_field(&self, index: usize, v: Variable) {
+    unsafe fn put_field(&self, _index: usize, _v: Variable) {
         panic!("cannot modify interned string");
     }
 
     unsafe fn get_field(&self, index: usize) -> Variable {
         let SpecialStringObject::String {
             bytes_id,
-            bytes,
             hash,
             has_multi_bytes,
+            ..
         } = self
         else {
             panic!("not an object");
@@ -99,7 +102,7 @@ impl Object for SpecialStringObject {
     }
 
     unsafe fn get_array_index_raw(&self, index: usize, element_size: usize) -> &[u8] {
-        let SpecialStringObject::Bytes { bytes } = self else {
+        let SpecialStringObject::Bytes { bytes, .. } = self else {
             panic!("not an array");
         };
         debug_assert_eq!(element_size, 1);
@@ -107,11 +110,25 @@ impl Object for SpecialStringObject {
     }
 
     fn get_array_size(&self, element_size: usize) -> usize {
-        let SpecialStringObject::Bytes { bytes } = self else {
+        let SpecialStringObject::Bytes { bytes, .. } = self else {
             panic!("not an array");
         };
         debug_assert_eq!(element_size, 1);
         bytes.len()
+    }
+
+    unsafe fn get_u8_array_const(&self) -> *const u8 {
+        let SpecialStringObject::Bytes { bytes, .. } = self else {
+            panic!("not an array");
+        };
+        bytes.as_ptr()
+    }
+
+    fn get_monitor(&self) -> &ObjectMonitor {
+        match self {
+            SpecialStringObject::Bytes { monitor, .. } => monitor,
+            SpecialStringObject::String { monitor, .. } => monitor,
+        }
     }
 }
 impl SpecialObject for SpecialStringObject {}

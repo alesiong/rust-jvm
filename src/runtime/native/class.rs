@@ -28,7 +28,7 @@ fn init_class_name(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
 
 // private static native boolean desiredAssertionStatus0(Class<?> clazz);
 fn desired_assertion_status0(_env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
-    // TODO: always true
+    // TODO: from config
     Ok(Some(Boolean(true)))
 }
 
