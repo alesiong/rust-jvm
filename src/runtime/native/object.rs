@@ -1,6 +1,8 @@
 use crate::runtime::{
-    Exception, NativeEnv, NativeResult, NativeVariable, famous_classes::CLONEABLE_CLASS,
-    inheritance::is_class_implements, native::NATIVE_FUNCTIONS,
+    Exception, NativeEnv, NativeResult, NativeVariable,
+    famous_classes::{CLONE_NOT_SUPPORTED_EXCEPTION_CLASS, CLONEABLE_CLASS},
+    inheritance::is_class_implements,
+    native::NATIVE_FUNCTIONS,
 };
 
 // public native int hashCode();
@@ -25,7 +27,11 @@ fn native_object_clone(env: NativeEnv) -> NativeResult<Option<NativeVariable>> {
         object.get_class(),
         CLONEABLE_CLASS.get().expect("must have init"),
     ) {
-        return Err(Exception::new("java/lang/CloneNotSupportedException"));
+        return Err(Exception::new_vm(
+            CLONE_NOT_SUPPORTED_EXCEPTION_CLASS
+                .get()
+                .expect("must have init"),
+        ));
     }
 
     let cloned = env.heap.write().unwrap().clone(object.as_ref());

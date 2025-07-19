@@ -4,9 +4,10 @@ use crate::{
     descriptor::{FieldType, ReturnType},
     runtime,
     runtime::{
-        CodeAttribute, NativeResult, VmEnv, VtableIndex,
+        CodeAttribute, Exception, ExceptionTableItem, NativeResult, VmEnv, VtableIndex,
         class_loader::initialize_class,
         global::BOOTSTRAP_CLASS_LOADER,
+        inheritance::is_same_or_sub_class_of,
         interpreter::{InterpreterEnv, Next, global, instructions},
     },
 };
@@ -35,6 +36,7 @@ pub struct Frame {
     pub(in crate::runtime) method_name: String,
     pub(super) param_descriptor: Vec<FieldType>,
     pub(super) is_static: bool,
+    pub(super) exception_table: Vec<ExceptionTableItem>,
 }
 
 impl Frame {
@@ -52,6 +54,7 @@ impl Frame {
             method_name: self.method_name.clone(),
             param_descriptor: self.param_descriptor.clone(),
             is_static: self.is_static,
+            exception_table: vec![],
         }
     }
 
@@ -302,6 +305,7 @@ impl Thread<'_> {
             method_name: method_info.name.to_str().into_owned(),
             param_descriptor: method_info.descriptor.parameters.to_vec(),
             is_static: !need_this,
+            exception_table: code.exception_table.clone(),
         };
 
         // return address
@@ -376,9 +380,7 @@ impl Thread<'_> {
                     println!();
                 }
                 Next::Exception(exception) => {
-                    // TODO: exception handle inside current/top frame
-                    env.next_native_thread.print_frames();
-                    return Err(exception);
+                    self.handle_exception(exception, frame, &mut pc)?;
                 }
                 Next::InvokeSpecial {
                     static_class,
@@ -446,6 +448,65 @@ impl Thread<'_> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn handle_exception(
+        &mut self,
+        exception: Exception,
+        mut frame: Frame,
+        pc: &mut usize,
+    ) -> NativeResult<()> {
+        // TODO: if this return exception, attach the original stack
+        let (exp_class, obj_ref) = match exception {
+            // TODO: change to UserException, put stack in
+            Exception::VmException {
+                ref exception_type, ..
+            } => (Arc::clone(exception_type), 0),
+            Exception::UserException(obj_ref) => (
+                Arc::clone(global::HEAP.read().unwrap().get(obj_ref).get_class()),
+                obj_ref,
+            ),
+        };
+
+        let mut handler = -1;
+        for item in &frame.exception_table {
+            if !(item.start_pc as usize <= *pc && *pc < item.end_pc as usize) {
+                continue;
+            }
+            if let Some(cp_class) = &item.catch_type {
+                let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
+                let handler_class = cp_class
+                    .get_or_load_class(|| bootstrap_class_loader.resolve_class(&cp_class.name))?;
+                if !is_same_or_sub_class_of(&exp_class, &handler_class) {
+                    continue;
+                }
+                handler = item.handler_pc as i32;
+            } else {
+                handler = item.handler_pc as i32;
+                break;
+            }
+        }
+        if handler == -1 {
+            if let Some(frame) = self.top_frame.take()
+                && !frame.is_dummy()
+            {
+                // return address
+                // SAFETY: the first two must be return address
+                let upper = unsafe { frame.stack[0].return_address } as usize;
+                let lower = unsafe { frame.stack[1].return_address } as usize;
+                *pc = (upper << 32) | lower;
+
+                return self.handle_exception(exception, frame, pc);
+            }
+            return Err(exception);
+        } else {
+            *pc = handler as usize;
+            frame.stack.clear();
+            frame.stack.push(Variable { reference: obj_ref });
+            self.top_frame = Some(frame);
+        }
+
         Ok(())
     }
 

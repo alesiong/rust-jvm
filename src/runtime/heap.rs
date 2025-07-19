@@ -60,6 +60,9 @@ impl Heap {
         // TODO: error
         assert!(self.next_id < Self::MAX_OBJECT_ID - 1, "heap oom");
         let (layout, _) = Layout::new::<Arc<Class>>()
+            .extend(Layout::new::<ObjectMonitor>())
+            .unwrap()
+            .0
             .extend(Layout::array::<UnsafeCell<T>>(size).unwrap())
             .unwrap();
         let layout = layout.pad_to_align();
@@ -87,7 +90,7 @@ impl Heap {
         self.next_id = id;
     }
 
-    pub fn get(&self, id: u32) -> Arc<dyn Object> {
+    pub(in crate::runtime) fn get(&self, id: u32) -> Arc<dyn Object> {
         if id & Self::MAX_OBJECT_ID == 0 {
             Arc::clone(
                 self.heap[(id - 1) as usize]
@@ -104,7 +107,7 @@ impl Heap {
         }
     }
 
-    pub fn clone(&mut self, obj: &dyn Object) -> u32 {
+    pub(in crate::runtime) fn clone(&mut self, obj: &dyn Object) -> u32 {
         if let Some(obj) = obj.as_heap_object() {
             return self.clone_object(obj);
         }

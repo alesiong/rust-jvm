@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 /// source: class of value to be assigned to array
 /// target: class of *element* of the target array
-pub(in crate::runtime) fn is_array_assignable_to(source: &Arc<Class>, target: &Arc<Class>) -> bool {
+pub(in crate::runtime) fn is_assignable_to(source: &Arc<Class>, target: &Arc<Class>) -> bool {
     if let Some(source_type) = get_array_type(source) {
         // source is array
         if let Some(target_type) = get_array_type(target) {
@@ -23,7 +23,7 @@ pub(in crate::runtime) fn is_array_assignable_to(source: &Arc<Class>, target: &A
                 .array_element_type
                 .as_ref()
                 .expect("must be reference array");
-            is_array_assignable_to(source_arr_type, target_arr_type)
+            is_assignable_to(source_arr_type, target_arr_type)
         } else {
             // target is not array
             if target.access_flags.contains(ClassAccessFlag::INTERFACE) {

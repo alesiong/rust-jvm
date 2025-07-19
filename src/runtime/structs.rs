@@ -12,7 +12,7 @@ use crate::{
     class::JavaStr,
     consts::{ClassAccessFlag, FieldAccessFlag, MethodAccessFlag},
     descriptor::{FieldDescriptor, FieldType, MethodDescriptor},
-    runtime::Variable,
+    runtime::{Variable, famous_classes::CLASS_FORMAT_ERROR_CLASS},
 };
 
 mod attributes;
@@ -118,24 +118,38 @@ pub struct MethodInfo {
 }
 
 #[derive(Debug)]
-pub struct Exception {
-    exception_type: String,
-    message: String,
+pub enum Exception {
+    VmException {
+        exception_type: Arc<Class>,
+        message: String,
+    },
+    UserException(u32),
 }
 
 impl Exception {
-    pub(crate) fn new(exception_type: &str) -> Self {
-        Self {
-            exception_type: exception_type.to_string(),
+    pub(crate) fn new_vm(exception_type: &Arc<Class>) -> Self {
+        Exception::VmException {
+            exception_type: Arc::clone(exception_type),
             message: Default::default(),
         }
+    }
+
+    pub(crate) fn new_vm_msg(exception_type: &Arc<Class>, message: &str) -> Self {
+        Exception::VmException {
+            exception_type: Arc::clone(exception_type),
+            message: message.to_string(),
+        }
+    }
+
+    pub(crate) fn new(exception: u32) -> Self {
+        Exception::UserException(exception)
     }
 }
 
 impl From<nom::Err<nom::error::Error<&[u8]>>> for Exception {
     fn from(err: nom::Err<nom::error::Error<&[u8]>>) -> Self {
-        Self {
-            exception_type: "java/lang/ClassFormatError".to_string(),
+        Exception::VmException {
+            exception_type: Arc::clone(CLASS_FORMAT_ERROR_CLASS.get().expect("must init")),
             message: format!("{err:?}"),
         }
     }

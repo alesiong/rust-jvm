@@ -2,7 +2,11 @@ use crate::{
     descriptor::FieldType,
     runtime::{
         Exception, NativeEnv, NativeResult, NativeVariable,
-        inheritance::{get_array_type, is_array_assignable_to},
+        famous_classes::{
+            ARRAY_STORE_EXCEPTION_CLASS, INDEX_OUT_OF_BOUND_EXCEPTION_CLASS,
+            NULL_POINTER_EXCEPTION_CLASS,
+        },
+        inheritance::{get_array_type, is_assignable_to},
         native::NATIVE_FUNCTIONS,
         structs::get_array_index,
     },
@@ -21,18 +25,26 @@ fn native_system_arraycopy(env: NativeEnv) -> NativeResult<Option<NativeVariable
 
     // TODO: check bound and type
     if dest_ref == 0 || src_ref == 0 {
-        return Err(Exception::new("java/lang/NullPointerException"));
+        return Err(Exception::new_vm(
+            NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+        ));
     }
     let src = env.heap.read().unwrap().get(src_ref);
     let dest = env.heap.read().unwrap().get(dest_ref);
     let Some(src_type) = get_array_type(src.get_class()) else {
-        return Err(Exception::new("java/lang/ArrayStoreException"));
+        return Err(Exception::new_vm(
+            ARRAY_STORE_EXCEPTION_CLASS.get().expect("must have init"),
+        ));
     };
     let Some(dest_type) = get_array_type(dest.get_class()) else {
-        return Err(Exception::new("java/lang/ArrayStoreException"));
+        return Err(Exception::new_vm(
+            ARRAY_STORE_EXCEPTION_CLASS.get().expect("must have init"),
+        ));
     };
     if (src_type.is_primitive() || dest_type.is_primitive()) && src_type != dest_type {
-        return Err(Exception::new("java/lang/ArrayStoreException"));
+        return Err(Exception::new_vm(
+            ARRAY_STORE_EXCEPTION_CLASS.get().expect("must have init"),
+        ));
     }
 
     let src_ele_size = src_type.get_field_type_size();
@@ -48,7 +60,11 @@ fn native_system_arraycopy(env: NativeEnv) -> NativeResult<Option<NativeVariable
         || src_pos + length > src_len as i32
         || dest_pos + length > dest_len as i32
     {
-        return Err(Exception::new("java/lang/IndexOutOfBoundsException"));
+        return Err(Exception::new_vm(
+            INDEX_OUT_OF_BOUND_EXCEPTION_CLASS
+                .get()
+                .expect("must have init"),
+        ));
     }
 
     let mut arr_store_exception = None;
@@ -60,7 +76,7 @@ fn native_system_arraycopy(env: NativeEnv) -> NativeResult<Option<NativeVariable
                 continue;
             }
             let src_ele = env.heap.read().unwrap().get(ele_ref);
-            if !is_array_assignable_to(
+            if !is_assignable_to(
                 src_ele.get_class(),
                 dest.get_class()
                     .array_element_type
@@ -68,7 +84,11 @@ fn native_system_arraycopy(env: NativeEnv) -> NativeResult<Option<NativeVariable
                     .expect("must be array"),
             ) {
                 length = i - src_pos;
-                arr_store_exception = Some(Exception::new("java/lang/IndexOutOfBoundsException"));
+                arr_store_exception = Some(Exception::new_vm(
+                    INDEX_OUT_OF_BOUND_EXCEPTION_CLASS
+                        .get()
+                        .expect("must have init"),
+                ));
                 break;
             }
         }

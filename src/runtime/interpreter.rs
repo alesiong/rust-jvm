@@ -11,9 +11,15 @@ use crate::{
             get_class_object, initialize_class, intern_string, resolve_field,
             resolve_method_statically, resolve_static_method,
         },
+        famous_classes::{
+            ARITHMETIC_EXCEPTION_CLASS, ARRAY_INDEX_OUT_OF_BOUND_EXCEPTION_CLASS,
+            ARRAY_STORE_EXCEPTION_CLASS, CLASS_CAST_EXCEPTION_CLASS,
+            NEGATIVE_ARRAY_SIZE_EXCEPTION_CLASS, NO_SUCH_FIELD_ERROR_CLASS,
+            NO_SUCH_METHOD_ERROR_CLASS, NULL_POINTER_EXCEPTION_CLASS,
+        },
         global::BOOTSTRAP_CLASS_LOADER,
         heap::Heap,
-        inheritance::{get_array_len, get_array_type, is_same_or_sub_class_of},
+        inheritance::{get_array_len, get_array_type, is_assignable_to},
         native::NATIVE_FUNCTIONS,
         structs::{get_array_index, put_array_index},
     },
@@ -243,7 +249,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 inst::ARRAYLENGTH => {
                     let arr = unsafe { self.frame.stack.pop().unwrap().reference };
                     if arr == 0 {
-                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                        return Next::Exception(Exception::new_vm(
+                            NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     let arr_obj = self.heap.read().unwrap().get(arr);
 
@@ -461,7 +469,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_int();
                     let b = self.pop_int();
                     if a == 0 {
-                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
+                        return Next::Exception(Exception::new_vm(
+                            ARITHMETIC_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     self.push_int(b.wrapping_div(a))
                 }
@@ -469,7 +479,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_long();
                     let b = self.pop_long();
                     if a == 0 {
-                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
+                        return Next::Exception(Exception::new_vm(
+                            ARITHMETIC_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     self.push_long(b.wrapping_div(a));
                 }
@@ -488,7 +500,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_int();
                     let b = self.pop_int();
                     if a == 0 {
-                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
+                        return Next::Exception(Exception::new_vm(
+                            ARITHMETIC_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     self.frame.stack.push(Variable {
                         int: b.wrapping_rem(a),
@@ -498,7 +512,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     let a = self.pop_long();
                     let b = self.pop_long();
                     if a == 0 {
-                        return Next::Exception(Exception::new("java/lang/ArithmeticException"));
+                        return Next::Exception(Exception::new_vm(
+                            ARITHMETIC_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     self.push_long(b.wrapping_rem(a));
                 }
@@ -866,21 +882,21 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     except!(self.put_static());
                 }
                 inst::CHECKCAST => {
-                    // TODO: do real check
                     let cp_index = self.get_u16_args();
                     let runtime::ConstantPoolInfo::Class(cp_class) =
                         self.frame.class.get_constant(cp_index)
                     else {
                         panic!("invalid constant type {cp_index}");
                     };
-                    except!(self.resolve_class(cp_class));
+                    let target = except!(self.resolve_class(cp_class));
                     // SAFETY: rely on class file checking to ensure correct type
                     let obj_ref = unsafe { self.frame.stack.last().unwrap().reference };
                     if obj_ref != 0 {
                         let class = Arc::clone(self.heap.read().unwrap().get(obj_ref).get_class());
-                        // TODO: array, interface
-                        if !is_same_or_sub_class_of(&class, cp_class.class.get().unwrap()) {
-                            return Next::Exception(Exception::new("java/lang/ClassCastException"));
+                        if !is_assignable_to(&class, &target) {
+                            return Next::Exception(Exception::new_vm(
+                                CLASS_CAST_EXCEPTION_CLASS.get().expect("must have init"),
+                            ));
                         }
                     }
                 }
@@ -891,15 +907,14 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     else {
                         panic!("invalid constant type {cp_index}");
                     };
-                    except!(self.resolve_class(cp_class));
+                    let target = except!(self.resolve_class(cp_class));
                     // SAFETY: rely on class file checking to ensure correct type
                     let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
                     if obj_ref == 0 {
                         self.push_int(0);
                     } else {
                         let class = Arc::clone(self.heap.read().unwrap().get(obj_ref).get_class());
-                        // TODO: array, interface
-                        if is_same_or_sub_class_of(&class, cp_class.class.get().unwrap()) {
+                        if is_assignable_to(&class, &target) {
                             self.push_int(1);
                         } else {
                             self.push_int(0);
@@ -924,7 +939,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         self.frame.stack[self.frame.stack.len() - param_size - 1].reference
                     };
                     if this == 0 {
-                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                        return Next::Exception(Exception::new_vm(
+                            NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
 
                     let resolve = except!(
@@ -1010,13 +1027,26 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     wide = true;
                 }
 
+                // misc
+                inst::ATHROW => {
+                    let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
+                    if obj_ref == 0 {
+                        return Next::Exception(Exception::new_vm(
+                            NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
+                    }
+                    return Next::Exception(Exception::new(obj_ref));
+                }
+
                 inst::MONITORENTER => {
                     // TODO: support sync methods
                     // TODO: monitor enter/exit on Object.wait etc
                     // SAFETY: rely on class file checking to ensure correct type
                     let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
                     if obj_ref == 0 {
-                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                        return Next::Exception(Exception::new_vm(
+                            NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     let obj = self.heap.read().unwrap().get(obj_ref);
                     obj.get_monitor().enter();
@@ -1026,7 +1056,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                     // SAFETY: rely on class file checking to ensure correct type
                     let obj_ref = unsafe { self.frame.stack.pop().unwrap().reference };
                     if obj_ref == 0 {
-                        return Next::Exception(Exception::new("java/lang/NullPointerException"));
+                        return Next::Exception(Exception::new_vm(
+                            NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+                        ));
                     }
                     let obj = self.heap.read().unwrap().get(obj_ref);
                     // TODO:
@@ -1233,7 +1265,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let atype = self.get_i8_args();
         let count = self.pop_int();
         if count < 0 {
-            return Err(Exception::new("java/lang/NegativeArraySizeException"));
+            return Err(Exception::new_vm(
+                NEGATIVE_ARRAY_SIZE_EXCEPTION_CLASS
+                    .get()
+                    .expect("must have init"),
+            ));
         }
         let arr_type = match atype {
             // bool
@@ -1293,7 +1329,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let count = self.pop_int();
         if count < 0 {
-            return Err(Exception::new("java/lang/NegativeArraySizeException"));
+            return Err(Exception::new_vm(
+                NEGATIVE_ARRAY_SIZE_EXCEPTION_CLASS
+                    .get()
+                    .expect("must have init"),
+            ));
         }
 
         // build array class
@@ -1315,7 +1355,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         for i in 0..dimensions {
             let dim = self.pop_int();
             if dim < 0 {
-                return Err(Exception::new("java/lang/NegativeArraySizeException"));
+                return Err(Exception::new_vm(
+                    NEGATIVE_ARRAY_SIZE_EXCEPTION_CLASS
+                        .get()
+                        .expect("must have init"),
+                ));
             }
             dims[(dimensions - i - 1) as usize] = dim;
         }
@@ -1382,7 +1426,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
-            return Err(Exception::new("java/lang/NullPointerException"));
+            return Err(Exception::new_vm(
+                NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+            ));
         }
         let this_obj = self.heap.read().unwrap().get(this);
         unsafe {
@@ -1400,7 +1446,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let this = unsafe { self.frame.stack.pop().unwrap().reference };
         if this == 0 {
-            return Err(Exception::new("java/lang/NullPointerException"));
+            return Err(Exception::new_vm(
+                NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+            ));
         }
         let this_obj = self.heap.read().unwrap().get(this);
 
@@ -1640,7 +1688,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let index = unsafe { self.frame.stack.pop().unwrap().get_int() };
         let arr = unsafe { self.frame.stack.pop().unwrap().reference };
         if arr == 0 {
-            return Err(Exception::new("java/lang/NullPointerException"));
+            return Err(Exception::new_vm(
+                NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+            ));
         }
         let arr_object = self.heap.read().unwrap().get(arr);
 
@@ -1653,7 +1703,11 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         }
         // check array size
         if index >= arr_len as _ {
-            return Err(Exception::new("java/lang/ArrayIndexOutOfBoundsException"));
+            return Err(Exception::new_vm(
+                ARRAY_INDEX_OUT_OF_BOUND_EXCEPTION_CLASS
+                    .get()
+                    .expect("must have init"),
+            ));
         }
         Ok(unsafe { get_array_index::<T, _>(arr_object.as_ref(), index as _) })
     }
@@ -1662,7 +1716,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         let index = self.pop_int();
         let arr = unsafe { self.frame.stack.pop().unwrap().reference };
         if arr == 0 {
-            return Err(Exception::new("java/lang/NullPointerException"));
+            return Err(Exception::new_vm(
+                NULL_POINTER_EXCEPTION_CLASS.get().expect("must have init"),
+            ));
         }
 
         let arr_object = self.heap.read().unwrap().get(arr);
@@ -1673,11 +1729,17 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
         // check array type
         // TODO: check for object type
         if type_size != size_of::<T>() {
-            return Err(Exception::new("java/lang/ArrayStoreException"));
+            return Err(Exception::new_vm(
+                ARRAY_STORE_EXCEPTION_CLASS.get().expect("must have init"),
+            ));
         }
         // check array size
         if index >= arr_len as _ {
-            return Err(Exception::new("java/lang/ArrayIndexOutOfBoundsException"));
+            return Err(Exception::new_vm(
+                ARRAY_INDEX_OUT_OF_BOUND_EXCEPTION_CLASS
+                    .get()
+                    .expect("must have init"),
+            ));
         }
 
         unsafe {
@@ -1737,8 +1799,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     ) -> NativeResult<FieldResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader.resolve_class(&field_ref.class_name)?;
-        resolve_field(&class, field_ref, is_static)
-            .ok_or_else(|| Exception::new("java/lang/NoSuchFieldError"))
+        resolve_field(&class, field_ref, is_static).ok_or_else(|| {
+            Exception::new_vm(NO_SUCH_FIELD_ERROR_CLASS.get().expect("must have init"))
+        })
     }
 
     fn resolve_static_method(
@@ -1747,8 +1810,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     ) -> NativeResult<MethodResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader.resolve_class(&method_ref.class_name)?;
-        resolve_static_method(&class, method_ref)
-            .ok_or_else(|| Exception::new("java/lang/NoSuchMethodError"))
+        resolve_static_method(&class, method_ref).ok_or_else(|| {
+            Exception::new_vm(NO_SUCH_METHOD_ERROR_CLASS.get().expect("must have init"))
+        })
     }
 
     fn resolve_method_statically(
@@ -1757,11 +1821,12 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
     ) -> NativeResult<MethodResolve> {
         let bootstrap_class_loader = BOOTSTRAP_CLASS_LOADER.get().unwrap();
         let class = bootstrap_class_loader.resolve_class(&method_ref.class_name)?;
-        resolve_method_statically(&class, method_ref)
-            .ok_or_else(|| Exception::new("java/lang/NoSuchMethodError"))
+        resolve_method_statically(&class, method_ref).ok_or_else(|| {
+            Exception::new_vm(NO_SUCH_METHOD_ERROR_CLASS.get().expect("must have init"))
+        })
     }
 
-    fn new_vm_env(&self) -> VmEnv {
+    fn new_vm_env(&self) -> VmEnv<'_> {
         VmEnv::new(&self.next_native_thread, self.heap)
     }
 }
