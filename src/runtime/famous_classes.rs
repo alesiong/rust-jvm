@@ -37,6 +37,16 @@ pub(super) static ARRAY_INDEX_OUT_OF_BOUND_EXCEPTION_CLASS: OnceLock<Arc<Class>>
 pub(super) static ARITHMETIC_EXCEPTION_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
 pub(super) static NEGATIVE_ARRAY_SIZE_EXCEPTION_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
 
+pub(super) static BOOLEAN_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static CHAR_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static FLOAT_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static DOUBLE_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static BYTE_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static SHORT_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static INT_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static LONG_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+pub(super) static VOID_TYPE_CLASS: OnceLock<Arc<Class>> = OnceLock::new();
+
 pub(super) fn init_famous_classes() {
     let bootstrap = BOOTSTRAP_CLASS_LOADER.get().unwrap();
 
@@ -46,6 +56,26 @@ pub(super) fn init_famous_classes() {
                 .expect("must not be set");
         };
     }
+
+    macro_rules! resolve_primitive {
+        ($cls:ident, $name:literal) => {
+            $cls.set(
+                bootstrap
+                    .resolve_primitive_class($name)
+                    .expect("must succeed"),
+            )
+            .expect("must not be set");
+        };
+    }
+    resolve_primitive!(BOOLEAN_TYPE_CLASS, "boolean");
+    resolve_primitive!(CHAR_TYPE_CLASS, "char");
+    resolve_primitive!(FLOAT_TYPE_CLASS, "float");
+    resolve_primitive!(DOUBLE_TYPE_CLASS, "double");
+    resolve_primitive!(BYTE_TYPE_CLASS, "byte");
+    resolve_primitive!(SHORT_TYPE_CLASS, "short");
+    resolve_primitive!(INT_TYPE_CLASS, "int");
+    resolve_primitive!(LONG_TYPE_CLASS, "long");
+    resolve_primitive!(VOID_TYPE_CLASS, "void");
 
     resolve_famous!(OBJECT_CLASS, "java/lang/Object");
     resolve_famous!(STRING_CLASS, "java/lang/String");

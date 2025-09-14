@@ -5,8 +5,9 @@ mod instructions;
 use crate::{
     descriptor::{self, FieldType, parse_field_descriptor},
     runtime::{
-        self, ArrayType, Class, CpClassInfo, Exception, FieldResolve, MethodResolve, NativeEnv,
-        NativeResult, NativeVariable, VmEnv,
+        self, ArrayType, AttributeInfo, Class, ConstantPoolInfo, CpClassInfo, Exception,
+        FieldResolve, MethodResolve, Methodref, NativeEnv, NativeResult, NativeVariable,
+        ReferenceKind, VmEnv,
         class_loader::{
             get_class_object, initialize_class, intern_string, resolve_field,
             resolve_method_statically, resolve_static_method,
@@ -972,10 +973,10 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 }
                 inst::INVOKESTATIC => {
                     let cp_index = self.get_u16_args();
-                    let runtime::ConstantPoolInfo::Methodref(method_ref) =
-                        self.frame.class.get_constant(cp_index)
-                    else {
-                        panic!("invalid constant type {cp_index}");
+                    let method_ref = match self.frame.class.get_constant(cp_index) {
+                        ConstantPoolInfo::Methodref(method_ref) => method_ref,
+                        ConstantPoolInfo::InterfaceMethodref(method_ref) => method_ref,
+                        _ => panic!("invalid constant type {cp_index}"),
                     };
 
                     let resolve = except!(
@@ -996,6 +997,79 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                         index,
                     };
                 }
+                inst::INVOKEDYNAMIC => {
+                    let cp_index = self.get_u16_args();
+                    // skip two zeros
+                    self.get_u8_args();
+                    self.get_u8_args();
+                    let runtime::ConstantPoolInfo::InvokeDynamic {
+                        bootstrap_method_attr_index,
+                        name_and_type,
+                    } = self.frame.class.get_constant(cp_index)
+                    else {
+                        panic!("invalid constant type {cp_index}");
+                    };
+
+                    // FIXME: the following is special resolve, should first resovle method handle
+                    let mut bootstrap_methods = None;
+                    for attr in &self.frame.class.attributes {
+                        if let AttributeInfo::BootstrapMethods(b) = attr {
+                            bootstrap_methods = Some(b);
+                            break;
+                        }
+                    }
+                    let Some(bootstrap_methods) = bootstrap_methods else {
+                        panic!("cannot find bootstrap methods");
+                    };
+                    let bootstrap_method =
+                        &bootstrap_methods[*bootstrap_method_attr_index as usize];
+
+                    match bootstrap_method.bootstrap_method.reference_kind {
+                        // ReferenceKind::GetField => {}
+                        // ReferenceKind::GetStatic => {}
+                        // ReferenceKind::PutField => {}
+                        // ReferenceKind::PutStatic => {}
+                        // ReferenceKind::InvokeVirtual => {}
+                        ReferenceKind::InvokeStatic => {
+                            let runtime::ConstantPoolInfo::Methodref(method_ref) = self
+                                .frame
+                                .class
+                                .get_constant(bootstrap_method.bootstrap_method.reference_index)
+                            else {
+                                panic!("invalid constant type {cp_index}");
+                            };
+
+                            let resolved_bootstrap_method = except!(
+                                method_ref
+                                    .resolve
+                                    .get_or_try_init(|| self.resolve_static_method(method_ref))
+                            );
+                            let (cls, index, _) =
+                                resolved_bootstrap_method.get_class_and_index(&self.frame.class);
+                            let bootstrap_method_info = &cls.methods[index];
+
+                            except!(initialize_class(&self.new_vm_env(), cls));
+
+                            let mut bootstrap_method_thread =
+                                self.next_native_thread.new_native_frame_group(None);
+                            bootstrap_method_thread.new_frame(
+                                Arc::clone(cls),
+                                &bootstrap_method_info.name,
+                                &bootstrap_method_info.descriptor.parameters,
+                                0,
+                            );
+                            except!(bootstrap_method_thread.execute());
+                            dbg!(unsafe {
+                                bootstrap_method_thread.top_frame.unwrap().stack[0].reference
+                            });
+                        }
+                        // ReferenceKind::InvokeSpecial => {}
+                        // ReferenceKind::NewInvokeSpecial => {}
+                        // ReferenceKind::InvokeInterface => {}
+                        _ => todo!(),
+                    }
+                }
+
                 inst::INVOKENATIVE => {
                     except!(self.invoke_native());
                 }
@@ -1550,9 +1624,9 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
                 let id = get_class_object(class)?;
                 self.frame.stack.push(Variable { reference: id });
             }
-            runtime::ConstantPoolInfo::MethodHandle => todo!(),
+            runtime::ConstantPoolInfo::MethodHandle { .. } => todo!(),
             runtime::ConstantPoolInfo::MethodType => todo!(),
-            runtime::ConstantPoolInfo::Dynamic => todo!(),
+            runtime::ConstantPoolInfo::Dynamic { .. } => todo!(),
             _ => {
                 panic!("ldc error, invalid constant type");
             }
@@ -1660,7 +1734,7 @@ impl<'t, 'f> InterpreterEnv<'t, 'f> {
 
         let method = *NATIVE_FUNCTIONS
             .get(&(class_name, method_name, param_descriptor))
-            .unwrap();
+            .expect("cannot find native method");
 
         let ret = method(NativeEnv {
             args,

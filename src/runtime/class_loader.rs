@@ -31,6 +31,7 @@ use std::{
 
 mod bootstrap;
 
+use crate::runtime::{BootstrapMethod, MethodHandle, ReferenceKind};
 pub(super) use bootstrap::BootstrapClassLoader;
 pub use bootstrap::{ClassPathModule, JModModule, ModuleLoader};
 
@@ -93,6 +94,25 @@ pub fn gen_array_class(class_name: Arc<str>) -> runtime::Class {
     }
 }
 
+pub fn gen_primitive_class(class_name: Arc<str>) -> runtime::Class {
+    runtime::Class {
+        access_flags: ClassAccessFlag::PUBLIC | ClassAccessFlag::FINAL | ClassAccessFlag::SYNTHETIC,
+        class_name,
+        super_class: None,
+        interfaces: vec![],
+        static_fields_info: vec![],
+        instance_fields_info: vec![],
+        methods: vec![],
+        attributes: vec![],
+        constant_pool: vec![],
+        static_fields: vec![],
+        array_element_type: None,
+        // primitive class has no clinit
+        clinit_call: ReentrantMutex::new(Cell::new(ClinitStatus::Init)),
+        vtable: vec![],
+    }
+}
+
 fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::ConstantPoolInfo> {
     let mut constant_pool = Vec::with_capacity(cp.len());
     let mut class_info_map = HashMap::new();
@@ -142,19 +162,50 @@ fn parse_constant_pool(cp: &Vec<class::ConstantPoolInfo>) -> Vec<runtime::Consta
             class::ConstantPoolInfo::InterfaceMethodref {
                 class_index,
                 name_and_type_index,
-            } => Cpi::InterfaceMethodref {
-                class: class_info_map[class_index].clone(),
+            } => Cpi::InterfaceMethodref(Methodref {
+                class_name: Arc::clone(&class_info_map[class_index].name),
                 name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
-            },
+                resolve: Default::default(),
+            }),
             class::ConstantPoolInfo::NameAndType {
                 name_index,
                 descriptor_index,
             } => Cpi::NameAndType(resolve_cp_name_and_type(cp, *name_index, *descriptor_index)),
+            class::ConstantPoolInfo::Dynamic {
+                bootstrap_method_attr_index,
+                name_and_type_index,
+            } => Cpi::Dynamic {
+                bootstrap_method_attr_index: *bootstrap_method_attr_index,
+                name_and_type: resolve_cp_name_and_type_field(cp, *name_and_type_index),
+            },
+            class::ConstantPoolInfo::InvokeDynamic {
+                bootstrap_method_attr_index,
+                name_and_type_index,
+            } => Cpi::InvokeDynamic {
+                bootstrap_method_attr_index: *bootstrap_method_attr_index,
+                name_and_type: resolve_cp_name_and_type_method(cp, *name_and_type_index),
+            },
+            class::ConstantPoolInfo::MethodHandle {
+                reference_kind,
+                reference_index,
+            } => Cpi::MethodHandle(MethodHandle {
+                reference_kind: match *reference_kind {
+                    1 => ReferenceKind::GetField,
+                    2 => ReferenceKind::GetStatic,
+                    3 => ReferenceKind::PutField,
+                    4 => ReferenceKind::PutStatic,
+                    5 => ReferenceKind::InvokeVirtual,
+                    6 => ReferenceKind::InvokeStatic,
+                    7 => ReferenceKind::InvokeSpecial,
+                    8 => ReferenceKind::NewInvokeSpecial,
+                    9 => ReferenceKind::InvokeInterface,
+                    _ => panic!("invalid reference_kind: {reference_kind}"),
+                },
+                reference_index: *reference_index,
+            }),
             // TODO: fill
-            class::ConstantPoolInfo::MethodHandle { .. } => Cpi::MethodHandle,
             class::ConstantPoolInfo::MethodType { .. } => Cpi::MethodType,
-            class::ConstantPoolInfo::Dynamic { .. } => Cpi::Dynamic,
-            class::ConstantPoolInfo::InvokeDynamic { .. } => Cpi::InvokeDynamic,
+
             class::ConstantPoolInfo::Module { name_index } => {
                 Cpi::Module(resolve_cp_utf8(cp, *name_index))
             }
@@ -323,6 +374,16 @@ fn resolve_constant_value(constant_pool: &[runtime::ConstantPoolInfo], index: u1
     }
 }
 
+fn resolve_runtime_cp_method_handle(
+    constant_pool: &[runtime::ConstantPoolInfo],
+    index: u16,
+) -> MethodHandle {
+    let runtime::ConstantPoolInfo::MethodHandle(handle) = &constant_pool[index as usize - 1] else {
+        panic!("cannot find string {index}");
+    };
+    *handle
+}
+
 fn parse_attribute<'a>(
     attribute_name_index: u16,
     mut input: &'a [u8],
@@ -384,6 +445,32 @@ fn parse_attribute<'a>(
                 constant_pool,
                 sourcefile_index,
             ))
+        }
+        "BootstrapMethods" => {
+            let num_bootstrap_methods;
+            (input, num_bootstrap_methods) = be_u16(input)?;
+            let bootstrap_methods;
+            (input, bootstrap_methods) = count(
+                |input| {
+                    let (input, bootstrap_method_ref) = be_u16(input)?;
+                    let (input, num_bootstrap_arguments) = be_u16(input)?;
+                    let (input, bootstrap_arguments) =
+                        count(be_u16, num_bootstrap_arguments as _).parse(input)?;
+                    Ok((
+                        input,
+                        BootstrapMethod {
+                            bootstrap_method: resolve_runtime_cp_method_handle(
+                                constant_pool,
+                                bootstrap_method_ref,
+                            ),
+                            bootstrap_arguments,
+                        },
+                    ))
+                },
+                num_bootstrap_methods as _,
+            )
+            .parse(input)?;
+            runtime::AttributeInfo::BootstrapMethods(bootstrap_methods)
         }
         "LineNumberTable" => {
             let (line_number_table_length, line_number_table);

@@ -1,7 +1,7 @@
 use crate::{
     class::JavaStr,
     descriptor::{FieldDescriptor, ReturnType},
-    runtime::CpClassInfo,
+    runtime::{CpClassInfo, MethodHandle},
 };
 use std::sync::Arc;
 
@@ -22,6 +22,7 @@ pub enum AttributeInfo {
     ModuleHashes,
     ModuleTarget(Arc<JavaStr>),
     InnerClasses,
+    BootstrapMethods(Vec<BootstrapMethod>),
     Unknown(Arc<JavaStr>),
 }
 
@@ -136,4 +137,10 @@ pub struct ModuleExport {
     pub(crate) exports: Arc<JavaStr>,
     pub(crate) exports_flags: u16,
     pub(crate) exports_to: Vec<Arc<JavaStr>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapMethod {
+    pub(crate) bootstrap_method: MethodHandle,
+    pub(crate) bootstrap_arguments: Vec<u16>,
 }

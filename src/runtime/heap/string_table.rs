@@ -132,3 +132,12 @@ impl Object for SpecialStringObject {
     }
 }
 impl SpecialObject for SpecialStringObject {}
+
+impl SpecialStringObject {
+    pub(in crate::runtime) fn get_bytes(&self) -> &[u8] {
+        match self {
+            SpecialStringObject::Bytes { bytes, .. } => bytes,
+            SpecialStringObject::String { bytes, .. } => bytes,
+        }
+    }
+}

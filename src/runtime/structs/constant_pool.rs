@@ -17,15 +17,18 @@ pub enum ConstantPoolInfo {
     String(Arc<JavaStr>),
     Fieldref(Fieldref),
     Methodref(Methodref),
-    InterfaceMethodref {
-        class: CpClassInfo,
+    InterfaceMethodref(Methodref),
+    NameAndType(CpNameAndTypeInfo<Arc<JavaStr>>),
+    MethodHandle(MethodHandle),
+    MethodType,
+    Dynamic {
+        bootstrap_method_attr_index: u16,
+        name_and_type: CpNameAndTypeInfo<FieldDescriptor>,
+    },
+    InvokeDynamic {
+        bootstrap_method_attr_index: u16,
         name_and_type: CpNameAndTypeInfo<MethodDescriptor>,
     },
-    NameAndType(CpNameAndTypeInfo<Arc<JavaStr>>),
-    MethodHandle,
-    MethodType,
-    Dynamic,
-    InvokeDynamic,
     Module(Arc<JavaStr>),
     Package(Arc<JavaStr>),
     Empty,
@@ -127,4 +130,40 @@ impl MethodResolve {
             MethodResolve::OtherClass { index, .. } => *index,
         }
     }
+
+    pub(crate) fn get_class_and_index<'a>(
+        &'a self,
+        this_class: &'a Arc<Class>,
+    ) -> (&'a Arc<Class>, usize, isize) {
+        match self {
+            MethodResolve::InThisClass {
+                index,
+                vtable_index,
+            } => (this_class, *index, *vtable_index),
+            MethodResolve::OtherClass {
+                class,
+                index,
+                vtable_index,
+            } => (class, *index, *vtable_index),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MethodHandle {
+    pub(crate) reference_kind: ReferenceKind,
+    pub(crate) reference_index: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ReferenceKind {
+    GetField,
+    GetStatic,
+    PutField,
+    PutStatic,
+    InvokeVirtual,
+    InvokeStatic,
+    InvokeSpecial,
+    NewInvokeSpecial,
+    InvokeInterface,
 }

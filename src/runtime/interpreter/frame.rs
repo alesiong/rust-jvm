@@ -346,14 +346,15 @@ impl Thread<'_> {
                     };
                     self.top_frame = frame.previous_frame.map(|f| *f);
                     pc = return_pc;
-                    if let Some(ref mut frame) = self.top_frame {
-                        if !is_void {
-                            frame.stack.push(v1);
-                            if is_long {
-                                frame.stack.push(v2);
-                            }
+                    if let Some(ref mut frame) = self.top_frame
+                        && !is_void
+                    {
+                        frame.stack.push(v1);
+                        if is_long {
+                            frame.stack.push(v2);
                         }
                     }
+
                     print!(
                         "return from {}.{}({:?})",
                         frame.class.class_name, frame.method_name, frame.param_descriptor

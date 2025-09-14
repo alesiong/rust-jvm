@@ -23,7 +23,8 @@ use crate::{
             resolve_cp_class, resolve_from_vtable, resolve_method_statically_inner,
             resolve_static_field, resolve_static_method_inner,
         },
-        gen_array_class,
+        famous_classes::{CLONEABLE_CLASS, OBJECT_CLASS, SERIALIZABLE_CLASS},
+        gen_array_class, gen_primitive_class,
     },
 };
 
@@ -77,6 +78,21 @@ impl BootstrapClassLoader {
 
         Ok(Arc::clone(class))
     }
+
+    pub(in crate::runtime) fn resolve_primitive_class(
+        &self,
+        class_name: &str,
+    ) -> NativeResult<Arc<runtime::Class>> {
+        let class_cell = Arc::clone(
+            self.class_registry
+                .entry(class_name.to_string())
+                .or_default()
+                .value(),
+        );
+        let class = class_cell.get_or_init(|| Arc::new(gen_primitive_class(Arc::from(class_name))));
+        Ok(Arc::clone(class))
+    }
+
     fn resolve_array_class_with_field_type(
         &self,
         filed_type: FieldType,
@@ -123,7 +139,7 @@ impl BootstrapClassLoader {
         &self,
         ele_class: &Arc<runtime::Class>,
     ) -> NativeResult<Arc<runtime::Class>> {
-        let class_name_string = "[".to_string() + &ele_class.class_name;
+        let class_name_string = format!("[L{};", ele_class.class_name);
         let class_name: Arc<str> = Arc::from(class_name_string.as_str());
         let class_cell = Arc::clone(
             self.class_registry
